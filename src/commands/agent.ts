@@ -1,9 +1,7 @@
+import crypto from "node:crypto";
 import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../acp/policy.js";
 import { toAcpRuntimeError } from "../acp/runtime/errors.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
-
-const log = createSubsystemLogger("commands/agent");
 import {
   listAgentIds,
   resolveAgentDir,
@@ -70,6 +68,7 @@ import {
 } from "../infra/agent-events.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { getRemoteSkillEligibility } from "../infra/skills-remote.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { applyVerboseOverride } from "../sessions/level-overrides.js";
@@ -81,6 +80,8 @@ import { resolveAgentRunContext } from "./agent/run-context.js";
 import { updateSessionStoreAfterAgentRun } from "./agent/session-store.js";
 import { resolveSession } from "./agent/session.js";
 import type { AgentCommandIngressOpts, AgentCommandOpts } from "./agent/types.js";
+
+const log = createSubsystemLogger("commands/agent");
 
 type PersistSessionEntryParams = {
   sessionStore: Record<string, SessionEntry>;
@@ -449,7 +450,10 @@ async function agentCommandInternal(
   });
   const workspaceDir = workspace.dir;
   let sessionEntry = resolvedSessionEntry;
-  const runId = opts.runId?.trim() || sessionId;
+  // Each CLI invocation is a separate "turn" even when reusing a session.
+  // Use a per-turn runId by default so subagent workflows don't accidentally
+  // merge across unrelated requests.
+  const runId = opts.runId?.trim() || crypto.randomUUID();
   const acpManager = getAcpSessionManager();
   const acpResolution = sessionKey
     ? acpManager.resolveSession({

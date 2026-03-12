@@ -61,6 +61,10 @@ export type PluginRuntimeChannel = {
     recordSessionMetaFromInbound: typeof import("../../config/sessions.js").recordSessionMetaFromInbound;
     recordInboundSession: typeof import("../../channels/session.js").recordInboundSession;
     updateLastRoute: typeof import("../../config/sessions.js").updateLastRoute;
+    countActiveSubagentRuns: typeof import("../../agents/subagent-registry.js").countActiveRunsForSession;
+    listSubagentRunsForRequester: typeof import("../../agents/subagent-registry.js").listSubagentRunsForRequester;
+    countPendingDescendantRuns: typeof import("../../agents/subagent-registry.js").countPendingDescendantRuns;
+    readLatestAssistantReply: typeof import("../../agents/tools/agent-step.js").readLatestAssistantReply;
   };
   mentions: {
     buildMentionRegexes: typeof import("../../auto-reply/reply/mentions.js").buildMentionRegexes;

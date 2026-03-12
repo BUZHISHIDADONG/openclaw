@@ -3,10 +3,23 @@ import type { SubagentRunOutcome } from "./subagent-announce.js";
 import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.js";
 import type { SpawnSubagentMode } from "./subagent-spawn.js";
 
+export type SubagentWorkflowSummary = {
+  workflowId: string;
+  trackedRuns: number;
+  activeRuns: number;
+  pendingRuns: number;
+  settledRuns: number;
+  okRuns: number;
+  timeoutRuns: number;
+  errorRuns: number;
+  unknownRuns: number;
+};
+
 export type SubagentRunRecord = {
   runId: string;
   childSessionKey: string;
   requesterSessionKey: string;
+  workflowId?: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
   task: string;

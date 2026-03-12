@@ -4,6 +4,8 @@ const resolveFeishuAccountMock = vi.hoisted(() => vi.fn());
 const getFeishuRuntimeMock = vi.hoisted(() => vi.fn());
 const sendMessageFeishuMock = vi.hoisted(() => vi.fn());
 const sendMarkdownCardFeishuMock = vi.hoisted(() => vi.fn());
+const sendCardFeishuMock = vi.hoisted(() => vi.fn());
+const updateCardFeishuMock = vi.hoisted(() => vi.fn());
 const sendMediaFeishuMock = vi.hoisted(() => vi.fn());
 const createFeishuClientMock = vi.hoisted(() => vi.fn());
 const resolveReceiveIdTypeMock = vi.hoisted(() => vi.fn());
@@ -17,6 +19,8 @@ vi.mock("./runtime.js", () => ({ getFeishuRuntime: getFeishuRuntimeMock }));
 vi.mock("./send.js", () => ({
   sendMessageFeishu: sendMessageFeishuMock,
   sendMarkdownCardFeishu: sendMarkdownCardFeishuMock,
+  sendCardFeishu: sendCardFeishuMock,
+  updateCardFeishu: updateCardFeishuMock,
 }));
 vi.mock("./media.js", () => ({ sendMediaFeishu: sendMediaFeishuMock }));
 vi.mock("./client.js", () => ({ createFeishuClient: createFeishuClientMock }));
@@ -67,6 +71,8 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     vi.clearAllMocks();
     streamingInstances.length = 0;
     sendMediaFeishuMock.mockResolvedValue(undefined);
+    sendCardFeishuMock.mockResolvedValue({ messageId: "om_progress", chatId: "oc_chat" });
+    updateCardFeishuMock.mockResolvedValue(undefined);
 
     resolveFeishuAccountMock.mockReturnValue({
       accountId: "main",
@@ -101,6 +107,11 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         reply: {
           createReplyDispatcherWithTyping: createReplyDispatcherWithTypingMock,
           resolveHumanDelayConfig: vi.fn(() => undefined),
+        },
+        session: {
+          countActiveSubagentRuns: vi.fn(() => 0),
+          listSubagentRunsForRequester: vi.fn(() => []),
+          readLatestAssistantReply: vi.fn(async () => undefined),
         },
       },
     });
@@ -199,6 +210,43 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     expect(streamingInstances).toHaveLength(0);
     expect(sendMessageFeishuMock).toHaveBeenCalledTimes(1);
+    expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps raw render mode on pure text even when progressCard is enabled", async () => {
+    resolveFeishuAccountMock.mockReturnValue({
+      accountId: "main",
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+      config: {
+        renderMode: "raw",
+        streaming: false,
+        progressCard: {
+          mode: "tools_summary",
+        },
+      },
+    });
+
+    createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: {} as never,
+      chatId: "oc_chat",
+      sessionKey: "agent:main:feishu:p2p:oc_chat",
+    });
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    await options.deliver({ text: "plain raw text" }, { kind: "final" });
+
+    expect(sendMessageFeishuMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageFeishuMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "plain raw text",
+      }),
+    );
+    expect(sendCardFeishuMock).not.toHaveBeenCalled();
+    expect(updateCardFeishuMock).not.toHaveBeenCalled();
     expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
   });
 
@@ -589,6 +637,457 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         replyToMessageId: "om_msg",
         replyInThread: true,
       }),
+    );
+  });
+
+  it("updates a single progress card from tool events and final reply", async () => {
+    resolveFeishuAccountMock.mockReturnValue({
+      accountId: "main",
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+      config: {
+        renderMode: "auto",
+        streaming: true,
+        progressCard: { mode: "tools_summary" },
+      },
+    });
+
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatId: "oc_chat",
+    });
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    await result.replyOptions.onToolStart?.({ name: "read", phase: "start" });
+    await result.replyOptions.onReasoningStream?.({ text: "Checking related files" });
+    await result.replyOptions.onAgentEvent?.({
+      stream: "tool",
+      data: {
+        phase: "result",
+        name: "read",
+        meta: "src/index.ts",
+        isError: false,
+      },
+    });
+    await options.deliver({ text: "final answer" }, { kind: "final" });
+
+    expect(sendCardFeishuMock).toHaveBeenCalledTimes(1);
+    expect(updateCardFeishuMock).toHaveBeenCalled();
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+    expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps progress-card delivery when controls are rejected once by Feishu", async () => {
+    sendCardFeishuMock
+      .mockRejectedValueOnce(new Error("Failed to create card content: unsupported tag button"))
+      .mockResolvedValueOnce({ messageId: "om_progress", chatId: "oc_chat" });
+
+    resolveFeishuAccountMock.mockReturnValue({
+      accountId: "main",
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+      config: {
+        renderMode: "auto",
+        streaming: true,
+        progressCard: { mode: "tools_summary" },
+      },
+    });
+
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatId: "oc_chat",
+    });
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    await result.replyOptions.onToolStart?.({ name: "read", phase: "start" });
+    await result.replyOptions.onReasoningStream?.({ text: "Checking related files" });
+    await options.deliver({ text: "final answer" }, { kind: "final" });
+
+    expect(sendCardFeishuMock).toHaveBeenCalledTimes(2);
+    expect(updateCardFeishuMock).toHaveBeenCalled();
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+    expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to normal final send when progress-card final text is too long", async () => {
+    resolveFeishuAccountMock.mockReturnValue({
+      accountId: "main",
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+      config: {
+        renderMode: "auto",
+        streaming: true,
+        progressCard: { mode: "tools" },
+      },
+    });
+
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatId: "oc_chat",
+    });
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    await result.replyOptions.onToolStart?.({ name: "exec", phase: "start" });
+    await options.deliver({ text: "x".repeat(4001) }, { kind: "final" });
+
+    expect(sendCardFeishuMock).toHaveBeenCalledTimes(1);
+    expect(updateCardFeishuMock).toHaveBeenCalled();
+    expect(sendMessageFeishuMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a progress card from partial-only text updates", async () => {
+    resolveFeishuAccountMock.mockReturnValue({
+      accountId: "main",
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+      config: {
+        renderMode: "auto",
+        streaming: true,
+        progressCard: { mode: "tools_summary" },
+      },
+    });
+
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatId: "oc_chat",
+    });
+
+    await result.replyOptions.onPartialReply?.({ text: "partial answer only" });
+
+    expect(sendCardFeishuMock).toHaveBeenCalledTimes(1);
+    expect(updateCardFeishuMock).toHaveBeenCalled();
+    const patchedCard =
+      updateCardFeishuMock.mock.calls[updateCardFeishuMock.mock.calls.length - 1]?.[0]?.card;
+    expect(JSON.stringify(patchedCard)).toContain("partial answer only");
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+    expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
+  });
+
+  it("marks the progress card as done when a final reply is silently skipped", async () => {
+    resolveFeishuAccountMock.mockReturnValue({
+      accountId: "main",
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+      config: {
+        renderMode: "auto",
+        streaming: true,
+        progressCard: { mode: "tools_summary" },
+      },
+    });
+
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatId: "oc_chat",
+    });
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    await result.replyOptions.onToolStart?.({ name: "read", phase: "start" });
+    await result.replyOptions.onPartialReply?.({ text: "partial answer" });
+    await options.onSkip?.({ text: "NO_REPLY" }, { kind: "final", reason: "silent" });
+    await options.onIdle?.();
+
+    const patchedCard = updateCardFeishuMock.mock.calls[
+      updateCardFeishuMock.mock.calls.length - 1
+    ]?.[0]?.card as {
+      header?: { title?: { content?: string } };
+      body?: { elements?: Array<{ content?: string }> };
+    };
+    expect(patchedCard.header?.title?.content).toBe("🦞 OpenClaw 已完成");
+    expect(patchedCard.body?.elements?.[0]?.content).toContain("本轮无最终文本");
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+    expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
+  });
+
+  it("lets a later final summary override a failed tool step", async () => {
+    resolveFeishuAccountMock.mockReturnValue({
+      accountId: "main",
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+      config: {
+        renderMode: "auto",
+        streaming: true,
+        progressCard: { mode: "tools_summary" },
+      },
+    });
+
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatId: "oc_chat",
+    });
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    await result.replyOptions.onToolStart?.({ name: "cron", phase: "start" });
+    await result.replyOptions.onAgentEvent?.({
+      stream: "tool",
+      data: {
+        phase: "result",
+        name: "cron",
+        meta: "gateway timeout after 10000ms",
+        isError: true,
+      },
+    });
+    await result.replyOptions.onPartialReply?.({ text: "我继续盯着这次运行。" });
+    await options.deliver({ text: "最终汇总：任务已继续完成。" }, { kind: "final" });
+
+    const patchedCard = updateCardFeishuMock.mock.calls[
+      updateCardFeishuMock.mock.calls.length - 1
+    ]?.[0]?.card as {
+      header?: { title?: { content?: string } };
+      body?: { elements?: Array<{ content?: string }> };
+    };
+    expect(patchedCard.header?.title?.content).toBe("🦞 OpenClaw 已完成");
+    expect(patchedCard.body?.elements?.[0]?.content).toContain("最终汇总：任务已继续完成");
+    expect(patchedCard.body?.elements?.[0]?.content).not.toContain("处理失败");
+  });
+
+  it("keeps watching for a parent final reply even after tracked subagents are cleaned up", async () => {
+    vi.useFakeTimers();
+    try {
+      resolveFeishuAccountMock.mockReturnValue({
+        accountId: "main",
+        appId: "app_id",
+        appSecret: "app_secret",
+        domain: "feishu",
+        config: {
+          renderMode: "auto",
+          streaming: true,
+          progressCard: { mode: "tools_summary" },
+        },
+      });
+
+      const sessionKey = "agent:main:main";
+      const childSessionKey = "agent:main:subagent:researcher";
+      const sessionApi = {
+        countActiveSubagentRuns: vi.fn(() => 0),
+        listSubagentRunsForRequester: vi
+          .fn()
+          .mockReturnValueOnce([])
+          .mockReturnValueOnce([
+            {
+              runId: "run-1",
+              childSessionKey,
+              label: "researcher",
+              createdAt: 1_000,
+              startedAt: 1_000,
+              runTimeoutSeconds: 3_600,
+            },
+          ])
+          .mockReturnValueOnce([]),
+        readLatestAssistantReply: vi.fn(),
+      };
+      let parentReadCount = 0;
+      sessionApi.readLatestAssistantReply.mockImplementation(
+        async ({ sessionKey: requestedSessionKey }: { sessionKey: string }) => {
+          if (requestedSessionKey === sessionKey) {
+            parentReadCount += 1;
+            return parentReadCount >= 3 ? "最终汇总：这次任务已经全部收口。" : "上一轮旧回复";
+          }
+          if (requestedSessionKey === childSessionKey) {
+            return "阶段汇报：子任务正在整理材料";
+          }
+          return undefined;
+        },
+      );
+      getFeishuRuntimeMock.mockReturnValue({
+        channel: {
+          text: {
+            resolveTextChunkLimit: vi.fn(() => 4000),
+            resolveChunkMode: vi.fn(() => "line"),
+            resolveMarkdownTableMode: vi.fn(() => "preserve"),
+            convertMarkdownTables: vi.fn((value) => value),
+            chunkTextWithMode: vi.fn((value) => [value]),
+          },
+          reply: {
+            createReplyDispatcherWithTyping: createReplyDispatcherWithTypingMock,
+            resolveHumanDelayConfig: vi.fn(() => undefined),
+          },
+          session: sessionApi,
+        },
+      });
+      const result = createFeishuReplyDispatcher({
+        cfg: {} as never,
+        agentId: "agent",
+        runtime: { log: vi.fn(), error: vi.fn() } as never,
+        chatId: "oc_chat",
+        sessionKey,
+      });
+
+      const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+      await result.replyOptions.onToolStart?.({ name: "subagents", phase: "start" });
+      await options.deliver({ text: "进度 20%：已派发 1 个子任务" }, { kind: "final" });
+      await vi.advanceTimersByTimeAsync(4500);
+
+      const patchedCard = updateCardFeishuMock.mock.calls[
+        updateCardFeishuMock.mock.calls.length - 1
+      ]?.[0]?.card as {
+        header?: { title?: { content?: string } };
+        body?: { elements?: Array<{ content?: string }> };
+      };
+      expect(patchedCard.header?.title?.content).toBe("🦞 OpenClaw 已完成");
+      expect(patchedCard.body?.elements?.[0]?.content).toContain("最终汇总：这次任务已经全部收口");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not treat the previous turn's assistant reply as the current final summary", async () => {
+    vi.useFakeTimers();
+    try {
+      resolveFeishuAccountMock.mockReturnValue({
+        accountId: "main",
+        appId: "app_id",
+        appSecret: "app_secret",
+        domain: "feishu",
+        config: {
+          renderMode: "auto",
+          streaming: true,
+          progressCard: { mode: "tools_summary" },
+        },
+      });
+
+      const sessionKey = "agent:main:main";
+      const childSessionKey = "agent:main:subagent:researcher";
+      const sessionApi = {
+        countActiveSubagentRuns: vi.fn(() => 0),
+        listSubagentRunsForRequester: vi
+          .fn()
+          .mockReturnValueOnce([])
+          .mockReturnValueOnce([
+            {
+              runId: "run-1",
+              childSessionKey,
+              label: "researcher",
+              createdAt: 1_000,
+              startedAt: 1_000,
+              runTimeoutSeconds: 3_600,
+            },
+          ])
+          .mockReturnValueOnce([]),
+        readLatestAssistantReply: vi.fn(),
+      };
+      sessionApi.readLatestAssistantReply.mockImplementation(
+        async ({ sessionKey: requestedSessionKey }: { sessionKey: string }) => {
+          if (requestedSessionKey === sessionKey) {
+            return "上一轮旧回复";
+          }
+          if (requestedSessionKey === childSessionKey) {
+            return "阶段汇报：子任务正在整理材料";
+          }
+          return undefined;
+        },
+      );
+      getFeishuRuntimeMock.mockReturnValue({
+        channel: {
+          text: {
+            resolveTextChunkLimit: vi.fn(() => 4000),
+            resolveChunkMode: vi.fn(() => "line"),
+            resolveMarkdownTableMode: vi.fn(() => "preserve"),
+            convertMarkdownTables: vi.fn((value) => value),
+            chunkTextWithMode: vi.fn((value) => [value]),
+          },
+          reply: {
+            createReplyDispatcherWithTyping: createReplyDispatcherWithTypingMock,
+            resolveHumanDelayConfig: vi.fn(() => undefined),
+          },
+          session: sessionApi,
+        },
+      });
+      const result = createFeishuReplyDispatcher({
+        cfg: {} as never,
+        agentId: "agent",
+        runtime: { log: vi.fn(), error: vi.fn() } as never,
+        chatId: "oc_chat",
+        sessionKey,
+      });
+
+      const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+      await result.replyOptions.onToolStart?.({ name: "subagents", phase: "start" });
+      await options.deliver({ text: "进度 20%：已派发 1 个子任务" }, { kind: "final" });
+      await vi.advanceTimersByTimeAsync(4500);
+
+      const patchedCard = updateCardFeishuMock.mock.calls[
+        updateCardFeishuMock.mock.calls.length - 1
+      ]?.[0]?.card as {
+        header?: { title?: { content?: string } };
+        body?: { elements?: Array<{ content?: string }> };
+      };
+      expect(patchedCard.header?.title?.content).toBe("🦞 OpenClaw 等待最终汇总");
+      expect(patchedCard.body?.elements?.[0]?.content).toContain("等待最终汇总");
+      expect(patchedCard.body?.elements?.[0]?.content).not.toContain("上一轮旧回复");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("only reads activity for the visible active subagents on each snapshot", async () => {
+    resolveFeishuAccountMock.mockReturnValue({
+      accountId: "main",
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+      config: {
+        renderMode: "auto",
+        streaming: true,
+        progressCard: { mode: "tools_summary" },
+      },
+    });
+
+    const sessionKey = "agent:main:main";
+    const activeRuns = Array.from({ length: 5 }, (_, index) => ({
+      runId: `run-${index + 1}`,
+      childSessionKey: `agent:main:subagent:worker-${index + 1}`,
+      label: `worker-${index + 1}`,
+      createdAt: 1_000 + index,
+      startedAt: 1_000 + index,
+      runTimeoutSeconds: 3_600,
+    }));
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatId: "oc_chat",
+      sessionKey,
+    });
+    const sessionApi = getFeishuRuntimeMock.mock.results[0]?.value?.channel?.session as {
+      listSubagentRunsForRequester: ReturnType<typeof vi.fn>;
+      readLatestAssistantReply: ReturnType<typeof vi.fn>;
+    };
+    sessionApi.listSubagentRunsForRequester.mockReturnValue(activeRuns);
+    const childActivityReads: string[] = [];
+    sessionApi.readLatestAssistantReply.mockImplementation(
+      async ({ sessionKey: requestedSessionKey }: { sessionKey: string }) => {
+        if (requestedSessionKey !== sessionKey) {
+          childActivityReads.push(requestedSessionKey);
+          return `动态：${requestedSessionKey}`;
+        }
+        return "上一轮旧回复";
+      },
+    );
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    await result.replyOptions.onToolStart?.({ name: "subagents", phase: "start" });
+    await options.deliver({ text: "进度 20%：已派发 5 个子任务" }, { kind: "final" });
+
+    expect(childActivityReads).toEqual(
+      activeRuns.slice(0, 3).map((entry) => entry.childSessionKey),
     );
   });
 });

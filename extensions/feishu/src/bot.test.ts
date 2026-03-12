@@ -198,6 +198,66 @@ describe("handleFeishuMessage command authorization", () => {
     );
   });
 
+  it("routes synthetic group stop commands back to the group target session", async () => {
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+          groupPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    mockResolveAgentRoute.mockReturnValue({
+      agentId: "main",
+      channel: "feishu",
+      accountId: "default",
+      sessionKey: "agent:main:feishu:group:oc-group-1",
+      mainSessionKey: "agent:main:main",
+      matchedBy: "default",
+    });
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-attacker",
+        },
+      },
+      message: {
+        message_id: "msg-card-stop-group",
+        chat_id: "oc-group-1",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "/stop" }),
+      },
+      syntheticMeta: {
+        commandSource: "native",
+        commandTargetSessionKey: "agent:main:feishu:group:oc-group-1",
+        skipReplyTo: true,
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockFinalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        SessionKey: "agent:main:feishu:group:oc-group-1",
+        CommandSource: "native",
+        CommandTargetSessionKey: "agent:main:feishu:group:oc-group-1",
+        ChatType: "group",
+      }),
+    );
+    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "oc-group-1",
+        chatType: "group",
+        sessionKey: "agent:main:feishu:group:oc-group-1",
+        replyToMessageId: undefined,
+        skipReplyToInMessages: true,
+      }),
+    );
+  });
+
   it("does not enqueue inbound preview text as system events", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
 

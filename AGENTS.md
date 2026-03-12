@@ -71,6 +71,21 @@
 - Format fix: `pnpm format:fix` (oxfmt --write)
 - Tests: `pnpm test` (vitest); coverage: `pnpm test:coverage`
 
+## 本地维护与启动（WSL）
+
+- 当前常用仓库目录（推荐）：`/path/to/openclaw`
+- 兼容目录（不建议长期运行）：`/mnt/<drive>/path/to/openclaw`（WSL 挂载盘高 I/O 场景可能出现卡顿）
+- 当前 Git 远程绑定：`origin=<your-fork-url>`，`upstream=https://github.com/openclaw/openclaw.git`
+- 首次安装依赖：`cd "/path/to/openclaw" && pnpm install`
+- 网关启动前自检：`cd "/path/to/openclaw" && ./restart-gateway-proxy-feishu.sh --check`
+- 网关启动 / 重启（默认一律用脚本，不再手工 `pnpm openclaw gateway run` 或 `nohup ...`）：`cd "/path/to/openclaw" && ./restart-gateway-proxy-feishu.sh`
+- 停止网关：`pkill -f 'openclaw-gateway|run-node.mjs gateway run --bind loopback --port 18789' || true`
+- 实时日志：`tail -n 120 -f /tmp/openclaw-gateway.log`
+- 监听检查：`ss -ltnp | rg "18789|18791"`
+- 控制台地址：`http://127.0.0.1:18789/overview`
+- 查看当前网关 token：`node -e 'const fs=require("fs");const p=process.env.HOME+"/.openclaw/openclaw.json";const j=JSON.parse(fs.readFileSync(p,"utf8"));console.log(j?.gateway?.auth?.token ?? "")'`
+- 如果控制台提示 `unauthorized: too many failed authentication attempts (retry later)`：浏览器鉴权限流已触发，等待约 5 分钟或重启网关后再试。
+
 ## Coding Style & Naming Conventions
 
 - Language: TypeScript (ESM). Prefer strict typing; avoid `any`.

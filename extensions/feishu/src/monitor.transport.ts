@@ -15,6 +15,7 @@ import {
   recordWebhookStatus,
   wsClients,
 } from "./monitor.state.js";
+import { abortActiveFeishuProgressCards } from "./progress-card.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
 export type MonitorTransportParams = {
@@ -39,20 +40,36 @@ export async function monitorWebSocket({
   wsClients.set(accountId, wsClient);
 
   return new Promise((resolve, reject) => {
+    let settled = false;
     const cleanup = () => {
       wsClients.delete(accountId);
       botOpenIds.delete(accountId);
     };
-
-    const handleAbort = () => {
-      log(`feishu[${accountId}]: abort signal received, stopping`);
+    const finalize = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       cleanup();
       resolve();
     };
 
+    const handleAbort = () => {
+      log(`feishu[${accountId}]: abort signal received, stopping`);
+      void abortActiveFeishuProgressCards({
+        accountId,
+        reason: "网关或飞书通道已停止，本轮任务被中途打断，请重试。",
+      })
+        .catch((err) => {
+          runtime?.error?.(`feishu[${accountId}]: failed to abort progress cards: ${String(err)}`);
+        })
+        .finally(() => {
+          finalize();
+        });
+    };
+
     if (abortSignal?.aborted) {
-      cleanup();
-      resolve();
+      handleAbort();
       return;
     }
 
@@ -130,21 +147,37 @@ export async function monitorWebhook({
   httpServers.set(accountId, server);
 
   return new Promise((resolve, reject) => {
+    let settled = false;
     const cleanup = () => {
       server.close();
       httpServers.delete(accountId);
       botOpenIds.delete(accountId);
     };
-
-    const handleAbort = () => {
-      log(`feishu[${accountId}]: abort signal received, stopping Webhook server`);
+    const finalize = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       cleanup();
       resolve();
     };
 
+    const handleAbort = () => {
+      log(`feishu[${accountId}]: abort signal received, stopping Webhook server`);
+      void abortActiveFeishuProgressCards({
+        accountId,
+        reason: "网关或飞书通道已停止，本轮任务被中途打断，请重试。",
+      })
+        .catch((err) => {
+          runtime?.error?.(`feishu[${accountId}]: failed to abort progress cards: ${String(err)}`);
+        })
+        .finally(() => {
+          finalize();
+        });
+    };
+
     if (abortSignal?.aborted) {
-      cleanup();
-      resolve();
+      handleAbort();
       return;
     }
 

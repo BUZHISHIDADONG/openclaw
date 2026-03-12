@@ -532,6 +532,33 @@ Feishu supports streaming replies via interactive cards. When enabled, the bot u
 
 Set `streaming: false` to wait for the full reply before sending.
 
+### Progress card
+
+For long-running Feishu tasks, you can enable a single live-updating progress card instead of waiting for all progress to appear at the end.
+
+```json5
+{
+  channels: {
+    feishu: {
+      progressCard: {
+        mode: "tools_summary", // off | tools | tools_summary
+      },
+    },
+  },
+  agents: {
+    defaults: {
+      verboseDefault: "on", // recommended so tool summaries are emitted consistently
+    },
+  },
+}
+```
+
+- `off`: disable the progress card.
+- `tools`: show live tool execution progress in a single card.
+- `tools_summary`: show tool progress plus a short live reasoning summary.
+
+When enabled, OpenClaw keeps tool progress and the final answer in one Feishu card. If the final answer is too long for the card, the card keeps a short completion note and the full answer is sent as a follow-up message.
+
 ### Multi-agent routing
 
 Use `bindings` to route Feishu DMs or groups to different agents.
@@ -618,6 +645,7 @@ Key options:
 | `channels.feishu.mediaMaxMb`                      | Media size limit                        | `30`             |
 | `channels.feishu.streaming`                       | Enable streaming card output            | `true`           |
 | `channels.feishu.blockStreaming`                  | Enable block streaming                  | `true`           |
+| `channels.feishu.progressCard.mode`               | Live single-card progress UI            | `off`            |
 
 ---
 

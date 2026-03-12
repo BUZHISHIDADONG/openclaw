@@ -10,6 +10,8 @@ export const AgentInternalEventSchema = Type.Object(
     childSessionId: Type.Optional(Type.String()),
     announceType: Type.String(),
     taskLabel: Type.String(),
+    workflowId: Type.Optional(Type.String()),
+    workflowSummaryLine: Type.Optional(Type.String()),
     status: Type.String({ enum: ["ok", "timeout", "error", "unknown"] }),
     statusLabel: Type.String(),
     result: Type.String(),

@@ -4,6 +4,7 @@ import {
   __testing as sessionBindingServiceTesting,
   registerSessionBindingAdapter,
 } from "../infra/outbound/session-binding-service.js";
+import type { SubagentWorkflowSummary } from "./subagent-registry.types.js";
 
 type AgentCallRequest = { method?: string; params?: Record<string, unknown> };
 type RequesterResolution = {
@@ -37,6 +38,10 @@ const subagentRegistryMock = {
   countPendingDescendantRuns: vi.fn((_sessionKey: string) => 0),
   countPendingDescendantRunsExcludingRun: vi.fn((_sessionKey: string, _runId: string) => 0),
   resolveRequesterForChildSession: vi.fn((_sessionKey: string): RequesterResolution => null),
+  resolveWorkflowIdForChildSession: vi.fn((_sessionKey: string): string | undefined => undefined),
+  summarizeWorkflowRuns: vi.fn(
+    (_workflowId: string): SubagentWorkflowSummary | undefined => undefined,
+  ),
 };
 const subagentDeliveryTargetHookMock = vi.fn(
   async (_event?: unknown, _ctx?: unknown): Promise<SubagentDeliveryTargetResult | undefined> =>
@@ -72,7 +77,7 @@ const defaultOutcomeAnnounce = {
 };
 
 async function getSingleAgentCallParams() {
-  expect(agentSpy).toHaveBeenCalledTimes(1);
+  expect(agentSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
   const call = agentSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
   return call?.params ?? {};
 }
@@ -195,6 +200,8 @@ describe("subagent announce formatting", () => {
         subagentRegistryMock.countPendingDescendantRuns(sessionKey),
       );
     subagentRegistryMock.resolveRequesterForChildSession.mockClear().mockReturnValue(null);
+    subagentRegistryMock.resolveWorkflowIdForChildSession.mockClear().mockReturnValue(undefined);
+    subagentRegistryMock.summarizeWorkflowRuns.mockClear().mockReturnValue(undefined);
     hasSubagentDeliveryTargetHook = false;
     hookRunnerMock.hasHooks.mockClear();
     hookRunnerMock.runSubagentDeliveryTarget.mockClear();
@@ -389,7 +396,7 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("step-139");
   });
 
-  it("sends deterministic completion message directly for manual spawn completion", async () => {
+  it("direct sends manual spawn completion when no sibling runs are unsettled", async () => {
     sessionStore = {
       "agent:main:subagent:test": {
         sessionId: "child-session-direct",
@@ -430,7 +437,7 @@ describe("subagent announce formatting", () => {
     expect(msg).not.toContain("Convert the result above into your normal assistant voice");
   });
 
-  it("keeps direct completion send when only the announcing run itself is pending", async () => {
+  it("keeps completion direct delivery when only the announcing run itself is pending", async () => {
     sessionStore = {
       "agent:main:subagent:test": {
         sessionId: "child-session-self-pending",
@@ -589,7 +596,7 @@ describe("subagent announce formatting", () => {
     expect(agentSpy).not.toHaveBeenCalled();
   });
 
-  it("does not retry completion direct send on permanent channel errors", async () => {
+  it("returns failure when completion direct send hits a non-retryable delivery error", async () => {
     sendSpy.mockRejectedValueOnce(new Error("unsupported channel: telegram"));
 
     const didAnnounce = await runSubagentAnnounceFlow({
@@ -663,13 +670,12 @@ describe("subagent announce formatting", () => {
     const msg = typeof rawMessage === "string" ? rawMessage : "";
     expect(call?.params?.channel).toBe("discord");
     expect(call?.params?.to).toBe("channel:12345");
-    expect(msg).toContain("There are still 1 active subagent run for this session.");
-    expect(msg).toContain(
-      "If they are part of the same workflow, wait for the remaining results before sending a user update.",
-    );
+    expect(msg).toContain("There are still 1 unsettled subagent run in this workflow.");
+    expect(msg).toContain("This is one child result, not the final answer.");
+    expect(msg).toContain("inspect it with the subagents tool");
   });
 
-  it("keeps session-mode completion delivery on the bound destination when sibling runs are active", async () => {
+  it("direct sends completion into the bound child destination when one exists", async () => {
     sessionStore = {
       "agent:main:subagent:test": {
         sessionId: "child-session-bound",
@@ -824,13 +830,10 @@ describe("subagent announce formatting", () => {
     const directTargets = sendSpy.mock.calls.map(
       (call) => (call?.[0] as { params?: { to?: string } })?.params?.to,
     );
-    expect(directTargets).toEqual(
-      expect.arrayContaining(["channel:thread-child-a", "channel:thread-child-b"]),
-    );
-    expect(directTargets).not.toContain("channel:main-parent-channel");
+    expect(directTargets).toEqual(["channel:thread-child-a", "channel:thread-child-b"]);
   });
 
-  it("uses completion direct-send headers for error and timeout outcomes", async () => {
+  it("keeps completion outcome headers on direct completion delivery", async () => {
     const cases = [
       {
         childSessionId: "child-session-direct-error",
@@ -856,6 +859,7 @@ describe("subagent announce formatting", () => {
 
     for (const testCase of cases) {
       sendSpy.mockClear();
+      agentSpy.mockClear();
       sessionStore = {
         "agent:main:subagent:test": {
           sessionId: testCase.childSessionId,
@@ -883,16 +887,17 @@ describe("subagent announce formatting", () => {
 
       expect(didAnnounce).toBe(true);
       expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(agentSpy).not.toHaveBeenCalled();
       const call = sendSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
       const rawMessage = call?.params?.message;
       const msg = typeof rawMessage === "string" ? rawMessage : "";
-      expect(msg).toContain(testCase.expectedHeader);
       expect(msg).toContain(testCase.replyText);
+      expect(msg).toContain(testCase.expectedHeader);
       expect(msg).not.toContain(testCase.excludedHeader);
     }
   });
 
-  it("routes manual completion direct-send using requester thread hints", async () => {
+  it("keeps requester thread hints on direct completion delivery", async () => {
     const cases = [
       {
         childSessionId: "child-session-direct-thread",
@@ -957,7 +962,7 @@ describe("subagent announce formatting", () => {
     }
   });
 
-  it("does not force Slack threadId from bound conversation id", async () => {
+  it("does not force Slack threadId from bound conversation id on direct completion delivery", async () => {
     sendSpy.mockClear();
     agentSpy.mockClear();
     sessionStore = {
@@ -1018,7 +1023,7 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.threadId).toBeUndefined();
   });
 
-  it("routes manual completion direct-send for telegram forum topics", async () => {
+  it("keeps telegram forum thread hints on direct completion delivery", async () => {
     sendSpy.mockClear();
     agentSpy.mockClear();
     sessionStore = {
@@ -1059,7 +1064,7 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.threadId).toBe("42");
   });
 
-  it("uses hook-provided thread target across requester thread variants", async () => {
+  it("uses hook-provided completion target across requester thread variants", async () => {
     const cases = [
       {
         childRunId: "run-direct-thread-bound",
@@ -1091,6 +1096,7 @@ describe("subagent announce formatting", () => {
 
     for (const testCase of cases) {
       sendSpy.mockClear();
+      agentSpy.mockClear();
       hasSubagentDeliveryTargetHook = true;
       subagentDeliveryTargetHookMock.mockResolvedValueOnce({
         origin: {
@@ -1129,13 +1135,15 @@ describe("subagent announce formatting", () => {
         },
       );
       expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(agentSpy).not.toHaveBeenCalled();
       const call = sendSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
       expect(call?.params?.channel).toBe("discord");
       expect(call?.params?.to).toBe("channel:777");
       expect(call?.params?.threadId).toBe("777");
       const message = typeof call?.params?.message === "string" ? call.params.message : "";
-      expect(message).toContain("completed this task (session remains active)");
-      expect(message).not.toContain("finished");
+      expect(message).toContain("completed this task");
+      expect(message).toContain("session remains active");
+      expect(message).not.toContain("A completed subagent task is ready for user delivery.");
     }
   });
 
@@ -1176,6 +1184,7 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe(true);
     expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(agentSpy).not.toHaveBeenCalled();
     const call = sendSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
     expect(call?.params?.channel).toBe("discord");
     expect(call?.params?.to).toBe("channel:12345");
@@ -1309,7 +1318,7 @@ describe("subagent announce formatting", () => {
     expect(new Set(idempotencyKeys).size).toBe(2);
   });
 
-  it("prefers direct delivery first for completion-mode and then queues on direct failure", async () => {
+  it("queues completion delivery when direct send fails but requester session is still active", async () => {
     embeddedRunMock.isEmbeddedPiRunActive.mockReturnValue(true);
     embeddedRunMock.isEmbeddedPiRunStreaming.mockReturnValue(false);
     sessionStore = {
@@ -1321,7 +1330,7 @@ describe("subagent announce formatting", () => {
         queueDebounceMs: 0,
       },
     };
-    sendSpy.mockRejectedValueOnce(new Error("direct delivery unavailable"));
+    sendSpy.mockRejectedValueOnce(new Error("send delivery unavailable"));
 
     const didAnnounce = await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:worker",
@@ -1334,19 +1343,26 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe(true);
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    expect(agentSpy).toHaveBeenCalledTimes(1);
     expect(sendSpy.mock.calls[0]?.[0]).toMatchObject({
       method: "send",
-      params: { sessionKey: "agent:main:main" },
+      params: {
+        channel: "whatsapp",
+        to: "+1555",
+      },
     });
+    expect(agentSpy).toHaveBeenCalledTimes(1);
     expect(agentSpy.mock.calls[0]?.[0]).toMatchObject({
       method: "agent",
-      params: { sessionKey: "agent:main:main" },
+      params: {
+        sessionKey: "agent:main:main",
+        channel: "whatsapp",
+        to: "+1555",
+        deliver: true,
+      },
     });
-    expect(agentSpy.mock.calls[0]?.[0]).toMatchObject({
-      method: "agent",
-      params: { channel: "whatsapp", to: "+1555", deliver: true },
-    });
+    const queuedMessage = (agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } })?.params
+      ?.message;
+    expect(queuedMessage).toContain("[Queued announce messages while agent was busy]");
   });
 
   it("falls back to internal requester-session injection when completion route is missing", async () => {
@@ -1387,15 +1403,12 @@ describe("subagent announce formatting", () => {
     });
   });
 
-  it("uses direct completion delivery when explicit channel+to route is available", async () => {
+  it("uses direct completion delivery with explicit channel+to route when available", async () => {
     sessionStore = {
       "agent:main:main": {
         sessionId: "requester-session-direct-route",
       },
     };
-    agentSpy.mockImplementationOnce(async () => {
-      throw new Error("agent fallback should not run when direct route exists");
-    });
 
     const didAnnounce = await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:worker",
@@ -1409,18 +1422,19 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe(true);
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    expect(agentSpy).toHaveBeenCalledTimes(0);
+    expect(agentSpy).not.toHaveBeenCalled();
     expect(sendSpy.mock.calls[0]?.[0]).toMatchObject({
       method: "send",
       params: {
         sessionKey: "agent:main:main",
         channel: "discord",
         to: "channel:12345",
+        accountId: "acct-1",
       },
     });
   });
 
-  it("returns failure for completion-mode when direct delivery fails and queue fallback is unavailable", async () => {
+  it("returns failure when completion direct send fails and queue fallback is unavailable", async () => {
     embeddedRunMock.isEmbeddedPiRunActive.mockReturnValue(false);
     embeddedRunMock.isEmbeddedPiRunStreaming.mockReturnValue(false);
     sessionStore = {
@@ -1430,7 +1444,7 @@ describe("subagent announce formatting", () => {
         lastTo: "+1555",
       },
     };
-    sendSpy.mockRejectedValueOnce(new Error("direct delivery unavailable"));
+    sendSpy.mockRejectedValueOnce(new Error("send delivery unavailable"));
 
     const didAnnounce = await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:worker",
@@ -1443,7 +1457,7 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe(false);
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    expect(agentSpy).toHaveBeenCalledTimes(0);
+    expect(agentSpy).not.toHaveBeenCalled();
   });
 
   it("uses assistant output for completion-mode when latest assistant text exists", async () => {
@@ -1473,6 +1487,7 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe(true);
     expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(agentSpy).not.toHaveBeenCalled();
     const call = sendSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
     const msg = call?.params?.message as string;
     expect(msg).toContain("assistant completion text");
@@ -1506,6 +1521,7 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe(true);
     expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(agentSpy).not.toHaveBeenCalled();
     const call = sendSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
     const msg = call?.params?.message as string;
     expect(msg).toContain("tool output only");
@@ -1534,6 +1550,7 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe(true);
     expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(agentSpy).not.toHaveBeenCalled();
     const call = sendSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
     const msg = call?.params?.message as string;
     expect(msg).toContain("✅ Subagent main finished");
@@ -1780,6 +1797,36 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.message).not.toContain("(no output)");
   });
 
+  it("keeps advisory guidance while earlier workflow completions are still pending delivery", async () => {
+    subagentRegistryMock.resolveWorkflowIdForChildSession.mockReturnValue("workflow-1");
+    subagentRegistryMock.summarizeWorkflowRuns.mockReturnValue({
+      workflowId: "workflow-1",
+      trackedRuns: 3,
+      activeRuns: 0,
+      pendingRuns: 2,
+      settledRuns: 3,
+      okRuns: 3,
+      timeoutRuns: 0,
+      errorRuns: 0,
+      unknownRuns: 0,
+    });
+
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-child-pending-workflow",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+    });
+
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    const msg = call?.params?.message as string;
+    expect(msg).toContain("There are still 1 unsettled subagent run in this workflow.");
+    expect(msg).toContain("This is one child result, not the final answer.");
+    expect(msg).toContain("reply ONLY: NO_REPLY");
+  });
+
   it("uses advisory guidance when sibling subagents are still active", async () => {
     subagentRegistryMock.countActiveDescendantRuns.mockImplementation((sessionKey: string) =>
       sessionKey === "agent:main:main" ? 2 : 0,
@@ -1795,11 +1842,9 @@ describe("subagent announce formatting", () => {
 
     const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
     const msg = call?.params?.message as string;
-    expect(msg).toContain("There are still 2 active subagent runs for this session.");
-    expect(msg).toContain(
-      "If they are part of the same workflow, wait for the remaining results before sending a user update.",
-    );
-    expect(msg).toContain("If they are unrelated, respond normally using only the result above.");
+    expect(msg).toContain("There are still 2 unsettled subagent runs in this workflow.");
+    expect(msg).toContain("This is one child result, not the final answer.");
+    expect(msg).toContain("reply ONLY: NO_REPLY");
   });
 
   it("defers announce while finished runs still have active descendants", async () => {

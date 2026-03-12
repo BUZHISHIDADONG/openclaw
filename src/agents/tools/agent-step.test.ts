@@ -46,4 +46,25 @@ describe("readLatestAssistantReply", () => {
 
     expect(result).toBe("older output");
   });
+
+  it("ignores the latest assistant text when it still carries tool calls", async () => {
+    callGatewayMock.mockResolvedValue({
+      messages: [
+        { role: "assistant", content: [{ type: "text", text: "older output" }] },
+        {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [
+            { type: "text", text: "进度 80%：正在补最后一个文件" },
+            { type: "toolCall", id: "call_1", name: "write", arguments: { file_path: "a" } },
+          ],
+        },
+        { role: "toolResult", content: [{ type: "text", text: "tool output" }] },
+      ],
+    });
+
+    const result = await readLatestAssistantReply({ sessionKey: "agent:main:child" });
+
+    expect(result).toBeUndefined();
+  });
 });

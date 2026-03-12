@@ -135,7 +135,7 @@ describe("subagent announce timeout config", () => {
     expect(directAgentCall?.timeoutMs).toBe(90_000);
   });
 
-  it("honors configured announce timeout for completion direct send call", async () => {
+  it("honors configured announce timeout for completion direct send", async () => {
     setConfiguredAnnounceTimeout(90_000);
     await runAnnounceFlowForTest("run-config-timeout-send", {
       requesterOrigin: {
@@ -147,5 +147,9 @@ describe("subagent announce timeout config", () => {
 
     const sendCall = findGatewayCall((call) => call.method === "send");
     expect(sendCall?.timeoutMs).toBe(90_000);
+    const directAgentCall = findGatewayCall(
+      (call) => call.method === "agent" && call.expectFinal === true,
+    );
+    expect(directAgentCall).toBeUndefined();
   });
 });

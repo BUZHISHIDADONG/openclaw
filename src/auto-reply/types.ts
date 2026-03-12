@@ -53,7 +53,13 @@ export type GetReplyOptions = {
   onBlockReply?: (payload: ReplyPayload, context?: BlockReplyContext) => Promise<void> | void;
   onToolResult?: (payload: ReplyPayload) => Promise<void> | void;
   /** Called when a tool phase starts/updates, before summary payloads are emitted. */
-  onToolStart?: (payload: { name?: string; phase?: string }) => Promise<void> | void;
+  onToolStart?: (payload: {
+    name?: string;
+    phase?: string;
+    toolCallId?: string;
+  }) => Promise<void> | void;
+  /** Low-level agent stream events for channel-specific live UIs. */
+  onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => Promise<void> | void;
   /** Called when the actual model is selected (including after fallback).
    * Use this to get model/provider/thinkLevel for responsePrefix template interpolation. */
   onModelSelected?: (ctx: ModelSelectedContext) => void;

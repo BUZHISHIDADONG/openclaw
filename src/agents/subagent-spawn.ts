@@ -61,6 +61,8 @@ export type SpawnSubagentParams = {
   model?: string;
   thinking?: string;
   runTimeoutSeconds?: number;
+  /** Workflow id for this requester turn (typically the parent runId). */
+  workflowId?: string;
   thread?: boolean;
   mode?: SpawnSubagentMode;
   cleanup?: "delete" | "keep";
@@ -798,6 +800,7 @@ export async function spawnSubagentDirect(
       label: label || undefined,
       model: resolvedModel,
       runTimeoutSeconds,
+      workflowId: params.workflowId,
       expectsCompletionMessage,
       spawnMode,
       attachmentsDir: attachmentAbsDir,

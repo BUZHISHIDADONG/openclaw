@@ -70,6 +70,8 @@ export function createSessionsSpawnTool(opts?: {
   sandboxed?: boolean;
   /** Explicit agent ID override for cron/hook sessions where session key parsing may not work. */
   requesterAgentIdOverride?: string;
+  /** Unique workflow id for the current requester turn (usually the parent runId). */
+  workflowId?: string;
 }): AnyAgentTool {
   return {
     label: "Sessions",
@@ -166,6 +168,7 @@ export function createSessionsSpawnTool(opts?: {
           model: modelOverride,
           thinking: thinkingOverrideRaw,
           runTimeoutSeconds,
+          workflowId: opts?.workflowId,
           thread,
           mode,
           cleanup,

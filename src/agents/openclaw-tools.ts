@@ -74,8 +74,14 @@ export function createOpenClawTools(options?: {
   senderIsOwner?: boolean;
   /** Ephemeral session UUID — regenerated on /new and /reset. */
   sessionId?: string;
+  /** Current agent runId (one per requester turn). */
+  runId?: string;
 }): AnyAgentTool[] {
   const workspaceDir = resolveWorkspaceRoot(options?.workspaceDir);
+  const workflowId =
+    typeof options?.runId === "string" && options.runId.trim() && options?.agentSessionKey
+      ? options.runId
+      : undefined;
   const imageTool = options?.agentDir?.trim()
     ? createImageTool({
         config: options?.config,
@@ -181,6 +187,7 @@ export function createOpenClawTools(options?: {
       agentGroupSpace: options?.agentGroupSpace,
       sandboxed: options?.sandboxed,
       requesterAgentIdOverride: options?.requesterAgentIdOverride,
+      workflowId,
     }),
     createSubagentsTool({
       agentSessionKey: options?.agentSessionKey,

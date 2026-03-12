@@ -42,6 +42,15 @@ const RenderModeSchema = z.enum(["auto", "raw", "card"]).optional();
 // for incremental text display with a "Thinking..." placeholder
 const StreamingModeSchema = z.boolean().optional();
 
+const ProgressCardModeSchema = z.enum(["off", "tools", "tools_summary"]).optional();
+
+const ProgressCardConfigSchema = z
+  .object({
+    mode: ProgressCardModeSchema,
+  })
+  .strict()
+  .optional();
+
 const BlockStreamingCoalesceSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -165,6 +174,7 @@ const FeishuSharedConfigShape = {
   heartbeat: ChannelHeartbeatVisibilitySchema,
   renderMode: RenderModeSchema,
   streaming: StreamingModeSchema,
+  progressCard: ProgressCardConfigSchema,
   tools: FeishuToolsConfigSchema,
   replyInThread: ReplyInThreadSchema,
   reactionNotifications: ReactionNotificationModeSchema,

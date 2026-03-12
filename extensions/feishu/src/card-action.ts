@@ -1,6 +1,10 @@
 import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk/feishu";
 import { resolveFeishuAccount } from "./accounts.js";
-import { handleFeishuMessage, type FeishuMessageEvent } from "./bot.js";
+import {
+  handleFeishuMessage,
+  type FeishuMessageEvent,
+  type FeishuSyntheticCommandMeta,
+} from "./bot.js";
 
 export type FeishuCardActionEvent = {
   operator: {
@@ -20,6 +24,17 @@ export type FeishuCardActionEvent = {
   };
 };
 
+type FeishuCardActionValue = {
+  text?: string;
+  command?: string;
+  targetSessionKey?: string;
+  targetChatId?: string;
+  targetChatType?: "group" | "p2p";
+  targetRootId?: string;
+  targetThreadId?: string;
+  targetCardMessageId?: string;
+};
+
 export async function handleFeishuCardAction(params: {
   cfg: ClawdbotConfig;
   event: FeishuCardActionEvent;
@@ -32,19 +47,42 @@ export async function handleFeishuCardAction(params: {
   const log = runtime?.log ?? console.log;
 
   // Extract action value
-  const actionValue = event.action.value;
+  const actionValue =
+    typeof event.action.value === "object" && event.action.value !== null
+      ? (event.action.value as FeishuCardActionValue)
+      : undefined;
   let content = "";
-  if (typeof actionValue === "object" && actionValue !== null) {
-    if ("text" in actionValue && typeof actionValue.text === "string") {
+  if (actionValue) {
+    if (typeof actionValue.text === "string") {
       content = actionValue.text;
-    } else if ("command" in actionValue && typeof actionValue.command === "string") {
+    } else if (typeof actionValue.command === "string") {
       content = actionValue.command;
     } else {
       content = JSON.stringify(actionValue);
     }
   } else {
-    content = String(actionValue);
+    content = String(event.action.value);
   }
+
+  const targetSessionKey = actionValue?.targetSessionKey?.trim() || undefined;
+  const targetChatId =
+    actionValue?.targetChatId?.trim() || event.context.chat_id || event.operator.open_id;
+  const targetChatType =
+    actionValue?.targetChatType === "group" || targetSessionKey?.includes(":group:")
+      ? "group"
+      : actionValue?.targetChatType === "p2p"
+        ? "p2p"
+        : event.context.chat_id
+          ? "group"
+          : "p2p";
+  const targetRootId = actionValue?.targetRootId?.trim() || undefined;
+  const targetThreadId = actionValue?.targetThreadId?.trim() || undefined;
+  const targetCardMessageId = actionValue?.targetCardMessageId?.trim() || undefined;
+  const syntheticMeta: FeishuSyntheticCommandMeta = {
+    commandSource: "native",
+    commandTargetSessionKey: targetSessionKey,
+    ...(targetRootId ? {} : { skipReplyTo: true }),
+  };
 
   // Construct a synthetic message event
   const messageEvent: FeishuMessageEvent = {
@@ -57,15 +95,18 @@ export async function handleFeishuCardAction(params: {
     },
     message: {
       message_id: `card-action-${event.token}`,
-      chat_id: event.context.chat_id || event.operator.open_id,
-      chat_type: event.context.chat_id ? "group" : "p2p",
+      ...(targetRootId ? { root_id: targetRootId } : {}),
+      ...(targetThreadId ? { thread_id: targetThreadId } : {}),
+      chat_id: targetChatId,
+      chat_type: targetChatType,
       message_type: "text",
       content: JSON.stringify({ text: content }),
     },
+    syntheticMeta,
   };
 
   log(
-    `feishu[${account.accountId}]: handling card action from ${event.operator.open_id}: ${content}`,
+    `feishu[${account.accountId}]: handling card action from ${event.operator.open_id}: ${content} -> chat=${targetChatId} type=${targetChatType} targetSession=${targetSessionKey ?? "(none)"}`,
   );
 
   // Dispatch as normal message

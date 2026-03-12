@@ -702,6 +702,28 @@ describe("runReplyAgent typing (heartbeat)", () => {
     });
   });
 
+  it("forwards low-level agent events through reply options", async () => {
+    const onAgentEvent = vi.fn();
+
+    state.runEmbeddedPiAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
+      params.onAgentEvent?.({
+        stream: "tool",
+        data: { phase: "result", name: "read", meta: "src/index.ts", isError: false },
+      });
+      return { payloads: [{ text: "final" }], meta: {} };
+    });
+
+    const { run } = createMinimalRun({
+      opts: { onAgentEvent },
+    });
+    await run();
+
+    expect(onAgentEvent).toHaveBeenCalledWith({
+      stream: "tool",
+      data: { phase: "result", name: "read", meta: "src/index.ts", isError: false },
+    });
+  });
+
   it("announces model fallback only when verbose mode is enabled", async () => {
     const cases = [
       { name: "verbose on", verbose: "on" as const, expectNotice: true },

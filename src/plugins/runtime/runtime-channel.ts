@@ -1,4 +1,10 @@
 import { resolveEffectiveMessagesConfig, resolveHumanDelayConfig } from "../../agents/identity.js";
+import {
+  countActiveRunsForSession,
+  countPendingDescendantRuns,
+  listSubagentRunsForRequester,
+} from "../../agents/subagent-registry.js";
+import { readLatestAssistantReply } from "../../agents/tools/agent-step.js";
 import { handleSlackAction } from "../../agents/tools/slack-actions.js";
 import {
   chunkByNewline,
@@ -174,6 +180,10 @@ export function createRuntimeChannel(): PluginRuntime["channel"] {
       recordSessionMetaFromInbound,
       recordInboundSession,
       updateLastRoute,
+      countActiveSubagentRuns: countActiveRunsForSession,
+      listSubagentRunsForRequester,
+      countPendingDescendantRuns,
+      readLatestAssistantReply,
     },
     mentions: {
       buildMentionRegexes,

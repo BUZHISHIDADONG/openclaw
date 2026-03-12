@@ -371,9 +371,11 @@ export async function runAgentTurnWithFallback(params: {
                 if (evt.stream === "tool") {
                   const phase = typeof evt.data.phase === "string" ? evt.data.phase : "";
                   const name = typeof evt.data.name === "string" ? evt.data.name : undefined;
+                  const toolCallId =
+                    typeof evt.data.toolCallId === "string" ? evt.data.toolCallId : undefined;
                   if (phase === "start" || phase === "update") {
                     await params.typingSignals.signalToolStart();
-                    await params.opts?.onToolStart?.({ name, phase });
+                    await params.opts?.onToolStart?.({ name, phase, toolCallId });
                   }
                 }
                 // Track auto-compaction completion
@@ -383,6 +385,7 @@ export async function runAgentTurnWithFallback(params: {
                     autoCompactionCompleted = true;
                   }
                 }
+                await params.opts?.onAgentEvent?.(evt);
               },
               // Always pass onBlockReply so flushBlockReplyBuffer works before tool execution,
               // even when regular block streaming is disabled. The handler sends directly

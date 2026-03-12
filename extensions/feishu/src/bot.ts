@@ -173,6 +173,12 @@ async function resolveFeishuSenderName(params: {
   }
 }
 
+export type FeishuSyntheticCommandMeta = {
+  commandSource?: "native";
+  commandTargetSessionKey?: string;
+  skipReplyTo?: boolean;
+};
+
 export type FeishuMessageEvent = {
   sender: {
     sender_id: {
@@ -204,6 +210,7 @@ export type FeishuMessageEvent = {
       tenant_key?: string;
     }>;
   };
+  syntheticMeta?: FeishuSyntheticCommandMeta;
 };
 
 export type FeishuBotAddedEvent = {
@@ -894,6 +901,10 @@ export async function handleFeishuMessage(params: {
   const isGroup = ctx.chatType === "group";
   const isDirect = !isGroup;
   const senderUserId = event.sender.sender_id.user_id?.trim() || undefined;
+  const syntheticCommandSource = event.syntheticMeta?.commandSource;
+  const syntheticCommandTargetSessionKey =
+    event.syntheticMeta?.commandTargetSessionKey?.trim() || undefined;
+  const skipReplyToForSyntheticCommand = event.syntheticMeta?.skipReplyTo === true;
 
   // Handle merge_forward messages: fetch full message via API then expand sub-messages
   if (event.message.message_type === "merge_forward") {
@@ -1049,7 +1060,7 @@ export async function handleFeishuMessage(params: {
       groupConfig,
     }));
 
-    if (requireMention && !ctx.mentionedBot) {
+    if (requireMention && !ctx.mentionedBot && syntheticCommandSource !== "native") {
       log(`feishu[${account.accountId}]: message in group ${ctx.chatId} did not mention bot`);
       // Record to pending history for non-broadcast groups only. For broadcast groups,
       // the mentioned handler's broadcast dispatch writes the turn directly into all
@@ -1312,6 +1323,10 @@ export async function handleFeishuMessage(params: {
         RootMessageId: ctx.rootId,
         RawBody: ctx.content,
         CommandBody: ctx.content,
+        ...(syntheticCommandSource ? { CommandSource: syntheticCommandSource } : {}),
+        ...(syntheticCommandTargetSessionKey
+          ? { CommandTargetSessionKey: syntheticCommandTargetSessionKey }
+          : {}),
         From: feishuFrom,
         To: feishuTo,
         SessionKey: agentSessionKey,
@@ -1352,8 +1367,13 @@ export async function handleFeishuMessage(params: {
     const configReplyInThread =
       isGroup &&
       (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled";
+    const syntheticThreadRootId =
+      syntheticCommandSource === "native" && typeof ctx.rootId === "string" && ctx.rootId.trim()
+        ? ctx.rootId.trim()
+        : undefined;
     const replyTargetMessageId =
-      isTopicSession || configReplyInThread ? (ctx.rootId ?? ctx.messageId) : ctx.messageId;
+      syntheticThreadRootId ??
+      (isTopicSession || configReplyInThread ? (ctx.rootId ?? ctx.messageId) : ctx.messageId);
     const threadReply = isGroup ? (groupSession?.threadReply ?? false) : false;
 
     if (broadcastAgents) {
@@ -1404,13 +1424,17 @@ export async function handleFeishuMessage(params: {
             agentId,
             runtime: runtime as RuntimeEnv,
             chatId: ctx.chatId,
-            replyToMessageId: replyTargetMessageId,
-            skipReplyToInMessages: !isGroup,
+            chatType: isGroup ? "group" : "p2p",
+            runId: ctx.messageId ? `feishu:${ctx.messageId}:${agentId}` : undefined,
+            replyToMessageId: skipReplyToForSyntheticCommand ? undefined : replyTargetMessageId,
+            skipReplyToInMessages: skipReplyToForSyntheticCommand ? true : !isGroup,
             replyInThread,
             rootId: ctx.rootId,
+            threadId: ctx.threadId,
             threadReply,
             mentionTargets: ctx.mentionTargets,
             accountId: account.accountId,
+            sessionKey: agentSessionKey,
             messageCreateTimeMs,
           });
 
@@ -1502,13 +1526,17 @@ export async function handleFeishuMessage(params: {
         agentId: route.agentId,
         runtime: runtime as RuntimeEnv,
         chatId: ctx.chatId,
-        replyToMessageId: replyTargetMessageId,
-        skipReplyToInMessages: !isGroup,
+        chatType: isGroup ? "group" : "p2p",
+        runId: ctx.messageId ? `feishu:${ctx.messageId}:${route.agentId}` : undefined,
+        replyToMessageId: skipReplyToForSyntheticCommand ? undefined : replyTargetMessageId,
+        skipReplyToInMessages: skipReplyToForSyntheticCommand ? true : !isGroup,
         replyInThread,
         rootId: ctx.rootId,
+        threadId: ctx.threadId,
         threadReply,
         mentionTargets: ctx.mentionTargets,
         accountId: account.accountId,
+        sessionKey: route.sessionKey,
         messageCreateTimeMs,
       });
 

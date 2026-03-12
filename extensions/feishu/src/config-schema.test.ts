@@ -156,6 +156,24 @@ describe("FeishuConfigSchema optimization flags", () => {
     expect(result.accounts?.main?.typingIndicator).toBe(false);
     expect(result.accounts?.main?.resolveSenderNames).toBe(false);
   });
+
+  it("accepts progressCard mode at top level", () => {
+    const result = FeishuConfigSchema.parse({
+      progressCard: { mode: "tools_summary" },
+    });
+    expect(result.progressCard?.mode).toBe("tools_summary");
+  });
+
+  it("accepts progressCard mode in account config", () => {
+    const result = FeishuConfigSchema.parse({
+      accounts: {
+        main: {
+          progressCard: { mode: "tools" },
+        },
+      },
+    });
+    expect(result.accounts?.main?.progressCard?.mode).toBe("tools");
+  });
 });
 
 describe("FeishuConfigSchema defaultAccount", () => {

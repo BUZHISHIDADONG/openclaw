@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config/config.js";
@@ -44,12 +45,13 @@ import {
   persistSubagentRunsToDisk,
   restoreSubagentRunsFromDisk,
 } from "./subagent-registry-state.js";
-import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import type { SubagentRunRecord, SubagentWorkflowSummary } from "./subagent-registry.types.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 
-export type { SubagentRunRecord } from "./subagent-registry.types.js";
+export type { SubagentRunRecord, SubagentWorkflowSummary } from "./subagent-registry.types.js";
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
+const subagentRegistryListeners = new Set<() => void>();
 let sweeper: NodeJS.Timeout | null = null;
 let listenerStarted = false;
 let listenerStop: (() => void) | null = null;
@@ -102,6 +104,103 @@ function logAnnounceGiveUp(entry: SubagentRunRecord, reason: "retry-limit" | "ex
 
 function persistSubagentRuns() {
   persistSubagentRunsToDisk(subagentRuns);
+  for (const listener of subagentRegistryListeners) {
+    try {
+      listener();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function onSubagentRegistryChange(listener: () => void): () => void {
+  subagentRegistryListeners.add(listener);
+  return () => subagentRegistryListeners.delete(listener);
+}
+
+function resolveWorkflowIdForChildSessionInternal(childSessionKey: string): string | undefined {
+  const key = childSessionKey.trim();
+  if (!key) {
+    return undefined;
+  }
+  let latest: SubagentRunRecord | undefined;
+  const runs = getSubagentRunsSnapshotForRead(subagentRuns);
+  for (const entry of runs.values()) {
+    if (entry.childSessionKey !== key || !entry.workflowId?.trim()) {
+      continue;
+    }
+    if (!latest || entry.createdAt > latest.createdAt) {
+      latest = entry;
+    }
+  }
+  return latest?.workflowId?.trim() || undefined;
+}
+
+function resolveWorkflowIdForNewRun(params: { workflowId?: string }): string {
+  const explicit = params.workflowId?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  return crypto.randomUUID();
+}
+
+function summarizeWorkflowRunsFromState(workflowId: string): SubagentWorkflowSummary | undefined {
+  const normalizedWorkflowId = workflowId.trim();
+  if (!normalizedWorkflowId) {
+    return undefined;
+  }
+  let trackedRuns = 0;
+  let activeRuns = 0;
+  let pendingRuns = 0;
+  let settledRuns = 0;
+  let okRuns = 0;
+  let timeoutRuns = 0;
+  let errorRuns = 0;
+  let unknownRuns = 0;
+
+  const runs = getSubagentRunsSnapshotForRead(subagentRuns);
+  for (const entry of runs.values()) {
+    if (entry.workflowId !== normalizedWorkflowId) {
+      continue;
+    }
+    trackedRuns += 1;
+    const runEnded = typeof entry.endedAt === "number";
+    const cleanupCompleted = typeof entry.cleanupCompletedAt === "number";
+    if (!runEnded) {
+      activeRuns += 1;
+    } else {
+      settledRuns += 1;
+      const status = entry.outcome?.status ?? "unknown";
+      if (status === "ok") {
+        okRuns += 1;
+      } else if (status === "timeout") {
+        timeoutRuns += 1;
+      } else if (status === "error") {
+        errorRuns += 1;
+      } else {
+        unknownRuns += 1;
+      }
+    }
+    if (!runEnded || !cleanupCompleted) {
+      pendingRuns += 1;
+    }
+  }
+
+  if (trackedRuns === 0) {
+    return undefined;
+  }
+
+  return {
+    workflowId: normalizedWorkflowId,
+    trackedRuns,
+    activeRuns,
+    pendingRuns,
+    settledRuns,
+    okRuns,
+    timeoutRuns,
+    errorRuns,
+    unknownRuns,
+  };
 }
 
 function findSessionEntryByKey(store: Record<string, SessionEntry>, sessionKey: string) {
@@ -407,6 +506,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     outcome: entry.outcome,
     spawnMode: entry.spawnMode,
     expectsCompletionMessage: entry.expectsCompletionMessage,
+    workflowId: entry.workflowId,
   })
     .then((didAnnounce) => {
       void finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
@@ -965,6 +1065,7 @@ export function registerSubagentRun(params: {
   runId: string;
   childSessionKey: string;
   requesterSessionKey: string;
+  workflowId?: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
   task: string;
@@ -987,10 +1088,14 @@ export function registerSubagentRun(params: {
   const runTimeoutSeconds = params.runTimeoutSeconds ?? 0;
   const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
+  const workflowId = resolveWorkflowIdForNewRun({
+    workflowId: params.workflowId,
+  });
   subagentRuns.set(params.runId, {
     runId: params.runId,
     childSessionKey: params.childSessionKey,
     requesterSessionKey: params.requesterSessionKey,
+    workflowId,
     requesterOrigin,
     requesterDisplayKey: params.requesterDisplayKey,
     task: params.task,
@@ -1120,6 +1225,14 @@ function findRunIdsByChildSessionKey(childSessionKey: string): string[] {
   return findRunIdsByChildSessionKeyFromRuns(subagentRuns, childSessionKey);
 }
 
+export function resolveWorkflowIdForChildSession(childSessionKey: string): string | undefined {
+  return resolveWorkflowIdForChildSessionInternal(childSessionKey);
+}
+
+export function summarizeWorkflowRuns(workflowId: string): SubagentWorkflowSummary | undefined {
+  return summarizeWorkflowRunsFromState(workflowId);
+}
+
 export function resolveRequesterForChildSession(childSessionKey: string): {
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
@@ -1213,7 +1326,10 @@ export function markSubagentRunTerminated(params: {
 }
 
 export function listSubagentRunsForRequester(requesterSessionKey: string): SubagentRunRecord[] {
-  return listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey);
+  return listRunsForRequesterFromRuns(
+    getSubagentRunsSnapshotForRead(subagentRuns),
+    requesterSessionKey,
+  );
 }
 
 export function countActiveRunsForSession(requesterSessionKey: string): number {

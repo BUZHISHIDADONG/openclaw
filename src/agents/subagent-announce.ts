@@ -129,6 +129,41 @@ function summarizeDeliveryError(error: unknown): string {
   }
 }
 
+type WorkflowRunSummary = {
+  workflowId: string;
+  trackedRuns: number;
+  activeRuns: number;
+  pendingRuns: number;
+  settledRuns: number;
+  okRuns: number;
+  timeoutRuns: number;
+  errorRuns: number;
+  unknownRuns: number;
+};
+
+function formatWorkflowSummaryLine(summary: WorkflowRunSummary | undefined): string | undefined {
+  if (!summary || summary.trackedRuns <= 0) {
+    return undefined;
+  }
+  const parts = [`Workflow: ${summary.trackedRuns} tracked`, `${summary.settledRuns} settled`];
+  if (summary.activeRuns > 0) {
+    parts.push(`${summary.activeRuns} active`);
+  }
+  if (summary.okRuns > 0) {
+    parts.push(`${summary.okRuns} ok`);
+  }
+  if (summary.timeoutRuns > 0) {
+    parts.push(`${summary.timeoutRuns} timed out`);
+  }
+  if (summary.errorRuns > 0) {
+    parts.push(`${summary.errorRuns} failed`);
+  }
+  if (summary.unknownRuns > 0) {
+    parts.push(`${summary.unknownRuns} unknown`);
+  }
+  return parts.join(" · ");
+}
+
 const TRANSIENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS: readonly RegExp[] = [
   /\berrorcode=unavailable\b/i,
   /\bstatus\s*[:=]\s*"?unavailable\b/i,
@@ -1083,19 +1118,30 @@ export type SubagentRunOutcome = {
 export type SubagentAnnounceType = "subagent task" | "cron job";
 
 function buildAnnounceReplyInstruction(params: {
-  remainingActiveSubagentRuns: number;
+  remainingUnsettledSubagentRuns: number;
   requesterIsSubagent: boolean;
   announceType: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
+  workflowSummary?: WorkflowRunSummary;
+  currentOutcomeStatus?: SubagentRunOutcome["status"];
 }): string {
-  if (params.remainingActiveSubagentRuns > 0) {
-    const activeRunsLabel = params.remainingActiveSubagentRuns === 1 ? "run" : "runs";
-    return `There are still ${params.remainingActiveSubagentRuns} active subagent ${activeRunsLabel} for this session. If they are part of the same workflow, wait for the remaining results before sending a user update. If they are unrelated, respond normally using only the result above.`;
+  const multiRunWorkflow = (params.workflowSummary?.trackedRuns ?? 0) > 1;
+  const workflowHasFailures =
+    (params.workflowSummary?.timeoutRuns ?? 0) > 0 ||
+    (params.workflowSummary?.errorRuns ?? 0) > 0 ||
+    params.currentOutcomeStatus === "timeout" ||
+    params.currentOutcomeStatus === "error";
+  if (params.remainingUnsettledSubagentRuns > 0) {
+    const unsettledRunsLabel = params.remainingUnsettledSubagentRuns === 1 ? "run" : "runs";
+    return `There are still ${params.remainingUnsettledSubagentRuns} unsettled subagent ${unsettledRunsLabel} in this workflow. This is one child result, not the final answer. Decide whether the user already needs a brief progress update grounded in the results collected so far, or whether you should keep waiting. If no user-facing update is needed right now, reply ONLY: ${SILENT_REPLY_TOKEN}. Never present this single child result as the final answer for the whole task. If you need more live state before deciding, inspect it with the subagents tool.`;
   }
   if (params.requesterIsSubagent) {
     return `Convert this completion into a concise internal orchestration update for your parent agent in your own words. Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
   }
   if (params.expectsCompletionMessage) {
+    if (multiRunWorkflow || workflowHasFailures) {
+      return `All currently tracked subagent runs for this workflow have settled. Review the collected child results already present in this session, then decide whether to: (1) synthesize a final user answer from the successful results, (2) explain any timeout/failure gaps while still giving a useful answer, or (3) relaunch a child with the subagents tool (optionally using a higher timeoutSeconds) if continuation is clearly worthwhile. Do not present only the single result above as the final answer unless it truly covers the whole task. Keep this internal context private.`;
+    }
     return `A completed ${params.announceType} is ready for user delivery. Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type).`;
   }
   return `A completed ${params.announceType} is ready for user delivery. Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type), and do not copy the internal event text verbatim. Reply ONLY: ${SILENT_REPLY_TOKEN} if this exact result was already delivered to the user in this same turn.`;
@@ -1127,6 +1173,7 @@ export async function runSubagentAnnounceFlow(params: {
   announceType?: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
   spawnMode?: SpawnSubagentMode;
+  workflowId?: string;
   signal?: AbortSignal;
   bestEffortDeliver?: boolean;
 }): Promise<boolean> {
@@ -1315,21 +1362,39 @@ export async function runSubagentAnnounceFlow(params: {
       }
     }
 
-    let remainingActiveSubagentRuns = 0;
+    let workflowId = params.workflowId?.trim() || undefined;
+    let workflowSummary: WorkflowRunSummary | undefined;
+    let remainingUnsettledSubagentRuns = 0;
     try {
-      const { countActiveDescendantRuns } = await loadSubagentRegistryRuntime();
-      remainingActiveSubagentRuns = Math.max(
+      const {
+        countPendingDescendantRuns,
+        countPendingDescendantRunsExcludingRun,
+        resolveWorkflowIdForChildSession,
+        summarizeWorkflowRuns,
+      } = await loadSubagentRegistryRuntime();
+      workflowId = workflowId ?? resolveWorkflowIdForChildSession(params.childSessionKey);
+      workflowSummary = workflowId ? summarizeWorkflowRuns(workflowId) : undefined;
+      // Gate final synthesis on unsettled workflow runs, not only actively running
+      // children, so late queued completions do not trigger a second parent reply.
+      remainingUnsettledSubagentRuns = Math.max(
         0,
-        countActiveDescendantRuns(targetRequesterSessionKey),
+        workflowSummary
+          ? workflowSummary.pendingRuns - 1
+          : params.childRunId
+            ? countPendingDescendantRunsExcludingRun(targetRequesterSessionKey, params.childRunId)
+            : countPendingDescendantRuns(targetRequesterSessionKey),
       );
     } catch {
       // Best-effort only; fall back to default announce instructions when unavailable.
     }
+    const workflowSummaryLine = formatWorkflowSummaryLine(workflowSummary);
     const replyInstruction = buildAnnounceReplyInstruction({
-      remainingActiveSubagentRuns,
+      remainingUnsettledSubagentRuns,
       requesterIsSubagent,
       announceType,
       expectsCompletionMessage,
+      workflowSummary,
+      currentOutcomeStatus: outcome.status,
     });
     const statsLine = await buildCompactAnnounceStatsLine({
       sessionKey: params.childSessionKey,
@@ -1351,6 +1416,8 @@ export async function runSubagentAnnounceFlow(params: {
         childSessionId: announceSessionId,
         announceType,
         taskLabel,
+        workflowId,
+        workflowSummaryLine,
         status: outcome.status,
         statusLabel,
         result: findings,

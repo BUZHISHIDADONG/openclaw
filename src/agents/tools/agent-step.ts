@@ -4,6 +4,42 @@ import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
 import { extractAssistantText, stripToolMessages } from "./sessions-helpers.js";
 
+function hasEmbeddedToolCall(message: Record<string, unknown>): boolean {
+  const content = message.content;
+  if (
+    Array.isArray(content) &&
+    content.some(
+      (part) =>
+        part &&
+        typeof part === "object" &&
+        ((part as { type?: unknown }).type === "toolCall" ||
+          (part as { type?: unknown }).type === "tool_use"),
+    )
+  ) {
+    return true;
+  }
+  const rawToolCalls =
+    message.tool_calls ?? message.toolCalls ?? message.function_call ?? message.functionCall;
+  if (Array.isArray(rawToolCalls)) {
+    return rawToolCalls.length > 0;
+  }
+  return Boolean(rawToolCalls);
+}
+
+function isTerminalAssistantMessage(message: Record<string, unknown>): boolean {
+  if (hasEmbeddedToolCall(message)) {
+    return false;
+  }
+  const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
+  return (
+    stopReason !== "toolUse" &&
+    stopReason !== "tool_use" &&
+    stopReason !== "tool_calls" &&
+    stopReason !== "function_call" &&
+    stopReason !== "functionCall"
+  );
+}
+
 export async function readLatestAssistantReply(params: {
   sessionKey: string;
   limit?: number;
@@ -25,7 +61,9 @@ export async function readLatestAssistantReply(params: {
     if (!text?.trim()) {
       continue;
     }
-    return text;
+    // A newest assistant turn that still carries tool calls is an in-flight update,
+    // not a stable final reply for downstream delivery or summarization.
+    return isTerminalAssistantMessage(candidate as Record<string, unknown>) ? text : undefined;
   }
   return undefined;
 }

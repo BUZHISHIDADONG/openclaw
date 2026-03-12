@@ -164,6 +164,18 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
           vi.fn() as unknown as PluginRuntime["channel"]["session"]["recordInboundSession"],
         updateLastRoute:
           vi.fn() as unknown as PluginRuntime["channel"]["session"]["updateLastRoute"],
+        countActiveSubagentRuns: vi.fn(
+          () => 0,
+        ) as unknown as PluginRuntime["channel"]["session"]["countActiveSubagentRuns"],
+        listSubagentRunsForRequester: vi.fn(
+          () => [],
+        ) as unknown as PluginRuntime["channel"]["session"]["listSubagentRunsForRequester"],
+        countPendingDescendantRuns: vi.fn(
+          () => 0,
+        ) as unknown as PluginRuntime["channel"]["session"]["countPendingDescendantRuns"],
+        readLatestAssistantReply: vi.fn(
+          async () => undefined,
+        ) as unknown as PluginRuntime["channel"]["session"]["readLatestAssistantReply"],
       },
       mentions: {
         buildMentionRegexes: vi.fn(() => [
