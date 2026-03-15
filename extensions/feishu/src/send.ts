@@ -90,30 +90,559 @@ function parseInteractiveCardContent(parsed: unknown): string {
     return "[Interactive Card]";
   }
 
-  const candidate = parsed as { elements?: unknown };
-  if (!Array.isArray(candidate.elements)) {
+  const card = parsed as Record<string, unknown>;
+
+  // Handle raw_card_content format (json_card field)
+  if (typeof card.json_card === "string") {
+    try {
+      const jsonCard = JSON.parse(card.json_card) as Record<string, unknown>;
+      return parseCardBody(jsonCard);
+    } catch {
+      // Fall back to parsing the current shape if json_card isn't valid JSON.
+    }
+  }
+
+  // Fallback to legacy format
+  return parseCardBody(card);
+}
+
+function parseCardBody(card: Record<string, unknown>): string {
+  // Extract body (schema 2.0)
+  let body = card.body;
+  if (!body || typeof body !== "object") {
+    // Fallback to top-level elements (schema 1.0)
+    if (Array.isArray(card.elements)) {
+      return extractElementsText(card.elements);
+    }
     return "[Interactive Card]";
   }
 
+  const bodyObj = body as Record<string, unknown>;
+
+  // Try body.property.elements first (official structure)
+  const prop = bodyObj.property;
+  if (prop && typeof prop === "object") {
+    const propObj = prop as Record<string, unknown>;
+    if (Array.isArray(propObj.elements)) {
+      return extractElementsText(propObj.elements);
+    }
+  }
+
+  // Fallback to body.elements
+  if (Array.isArray(bodyObj.elements)) {
+    return extractElementsText(bodyObj.elements);
+  }
+
+  return "[Interactive Card]";
+}
+
+function extractElementsText(elements: unknown[]): string {
   const texts: string[] = [];
-  for (const element of candidate.elements) {
+
+  for (const element of elements) {
+    // Handle nested arrays (e.g., [[{...}]])
+    const items = Array.isArray(element) ? element : [element];
+
+    for (const item of items) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+
+      const elem = item as Record<string, unknown>;
+      const text = extractElementText(elem);
+
+      if (text) {
+        texts.push(text);
+      }
+    }
+  }
+
+  return texts.join("\n").trim() || "[Interactive Card]";
+}
+
+// Extract markdown inline elements (no newlines between elements)
+function extractMarkdownElements(elements: unknown[]): string {
+  const parts: string[] = [];
+
+  for (const element of elements) {
     if (!element || typeof element !== "object") {
       continue;
     }
-    const item = element as {
-      tag?: string;
-      content?: string;
-      text?: { content?: string };
-    };
-    if (item.tag === "div" && typeof item.text?.content === "string") {
-      texts.push(item.text.content);
-      continue;
-    }
-    if (item.tag === "markdown" && typeof item.content === "string") {
-      texts.push(item.content);
+
+    const text = extractElementText(element as Record<string, unknown>);
+    if (text) {
+      parts.push(text);
     }
   }
-  return texts.join("\n").trim() || "[Interactive Card]";
+
+  return parts.join("");
+}
+
+function extractElementText(elem: Record<string, unknown>): string {
+  const tag = elem.tag as string | undefined;
+
+  // Extract property object (schema 2.0 structure)
+  const prop = (
+    elem.property && typeof elem.property === "object" ? elem.property : elem
+  ) as Record<string, unknown>;
+
+  // Handle different element types
+  switch (tag) {
+    case "div": {
+      const textElem = prop.text;
+      if (textElem && typeof textElem === "object") {
+        return extractTextContent(textElem as Record<string, unknown>);
+      }
+      break;
+    }
+    case "markdown":
+    case "markdown_v1": {
+      if (typeof prop.content === "string") {
+        return prop.content;
+      }
+      if (Array.isArray(prop.elements)) {
+        return extractElementsText(prop.elements);
+      }
+      break;
+    }
+    case "plain_text":
+    case "text": {
+      if (typeof prop.content === "string") {
+        // Apply text style if present
+        const style = extractTextStyle(prop);
+        return applyTextStyle(prop.content, style);
+      }
+      // Handle direct text field (e.g., {"tag": "text", "text": "..."})
+      if (typeof prop.text === "string") {
+        const style = extractTextStyle(prop);
+        return applyTextStyle(prop.text, style);
+      }
+      break;
+    }
+    case "heading": {
+      // Extract heading content (inline elements, no newlines)
+      if (Array.isArray(prop.elements)) {
+        const headingText = extractMarkdownElements(prop.elements);
+        const level = (prop.level as number) || 1;
+        const prefix = "#".repeat(Math.min(Math.max(level, 1), 6));
+        return headingText ? `${prefix} ${headingText}` : "";
+      }
+      break;
+    }
+    case "list": {
+      // Extract list items
+      if (Array.isArray(prop.items)) {
+        const listTexts: string[] = [];
+        for (const item of prop.items) {
+          if (!item || typeof item !== "object") continue;
+          const itemObj = item as Record<string, unknown>;
+          const itemElements = itemObj.elements;
+          if (Array.isArray(itemElements)) {
+            // Use extractMarkdownElements for inline content
+            const itemText = extractMarkdownElements(itemElements);
+            if (itemText) {
+              const listType = itemObj.type as string;
+              const level = (itemObj.level as number) || 0;
+              const order = (itemObj.order as number) || 0;
+              const indent = "  ".repeat(level);
+              const prefix = listType === "ol" ? `${Math.floor(order)}.` : "-";
+              listTexts.push(`${indent}${prefix} ${itemText}`);
+            }
+          }
+        }
+        return listTexts.join("\n");
+      }
+      break;
+    }
+    case "code_span": {
+      // Inline code
+      if (typeof prop.content === "string") {
+        return `\`${prop.content}\``;
+      }
+      break;
+    }
+    case "br": {
+      // Line break - return empty to avoid extra spacing
+      return "";
+    }
+    case "hr": {
+      // Horizontal rule
+      return "---";
+    }
+    case "blockquote": {
+      // Blockquote
+      let content = "";
+      if (typeof prop.content === "string") {
+        content = prop.content;
+      } else if (Array.isArray(prop.elements)) {
+        content = extractMarkdownElements(prop.elements);
+      }
+      if (!content) return "";
+      return content
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+    }
+    case "code_block": {
+      // Code block
+      const language = (prop.language as string) || "plaintext";
+      let code = "";
+      const contents = prop.contents as unknown[] | undefined;
+      if (Array.isArray(contents)) {
+        for (const line of contents) {
+          if (!line || typeof line !== "object") continue;
+          const lineObj = line as Record<string, unknown>;
+          const lineContents = lineObj.contents as unknown[] | undefined;
+          if (Array.isArray(lineContents)) {
+            for (const c of lineContents) {
+              if (!c || typeof c !== "object") continue;
+              const cObj = c as Record<string, unknown>;
+              if (typeof cObj.content === "string") code += cObj.content;
+            }
+          }
+        }
+      }
+      return `\`\`\`${language}\n${code}\`\`\``;
+    }
+    case "link": {
+      // Hyperlink
+      const content = (prop.content as string) || "链接";
+      let url = "";
+      const urlObj = prop.url as Record<string, unknown> | undefined;
+      if (urlObj && typeof urlObj === "object") {
+        url = (urlObj.url as string) || "";
+      }
+      if (url) return `[${content}](${url})`;
+      return content;
+    }
+    case "emoji": {
+      // Emoji - just return the key for now
+      const key = (prop.key as string) || "";
+      return key ? `:${key}:` : "";
+    }
+    case "at": {
+      // @ mention
+      const userID = (prop.userID as string) || "";
+      return userID ? `@${userID}` : "";
+    }
+    case "at_all": {
+      return "@所有人";
+    }
+    case "img":
+    case "image": {
+      // Image
+      let alt = "图片";
+      const altElem = prop.alt;
+      if (altElem && typeof altElem === "object") {
+        const altText = extractTextContent(altElem as Record<string, unknown>);
+        if (altText) alt = altText;
+      }
+      const titleElem = prop.title;
+      if (titleElem && typeof titleElem === "object") {
+        const titleText = extractTextContent(titleElem as Record<string, unknown>);
+        if (titleText) alt = titleText;
+      }
+      return `🖼️ ${alt}`;
+    }
+    case "column_set": {
+      // Column set - extract all columns
+      const columns = prop.columns as unknown[] | undefined;
+      if (Array.isArray(columns)) {
+        const columnTexts: string[] = [];
+        for (const col of columns) {
+          if (!col || typeof col !== "object") continue;
+          const colText = extractElementText(col as Record<string, unknown>);
+          if (colText) columnTexts.push(colText);
+        }
+        return columnTexts.join("\n\n");
+      }
+      break;
+    }
+    case "column": {
+      // Column - extract elements
+      if (Array.isArray(prop.elements)) {
+        return extractElementsText(prop.elements);
+      }
+      break;
+    }
+    case "collapsible_panel": {
+      // Collapsible panel
+      const expanded = prop.expanded === true;
+      let title = "详情";
+      const header = prop.header as Record<string, unknown> | undefined;
+      if (header && typeof header === "object") {
+        const titleElem = header.title;
+        if (titleElem) {
+          const t = extractTextContent(titleElem as Record<string, unknown>);
+          if (t) title = t;
+        }
+      }
+
+      if (expanded) {
+        let out = `▼ ${title}\n`;
+        if (Array.isArray(prop.elements)) {
+          const content = extractElementsText(prop.elements);
+          for (const line of content.split("\n")) {
+            if (line) out += `    ${line}\n`;
+          }
+        }
+        out += "▲";
+        return out;
+      }
+
+      return `▶ ${title}`;
+    }
+    case "note": {
+      if (Array.isArray(prop.elements)) {
+        const noteTexts = extractMarkdownElements(prop.elements);
+        return noteTexts ? `📝 ${noteTexts}` : "";
+      }
+      break;
+    }
+    case "button": {
+      // Button - extract text
+      const textElem = prop.text;
+      if (textElem && typeof textElem === "object") {
+        const buttonText = extractTextContent(textElem);
+        return buttonText ? `[${buttonText}]` : "[按钮]";
+      }
+      return "[按钮]";
+    }
+    case "actions":
+    case "action": {
+      // Actions container - extract all action elements
+      const actions = prop.actions as unknown[] | undefined;
+      if (Array.isArray(actions)) {
+        const actionTexts: string[] = [];
+        for (const action of actions) {
+          if (!action || typeof action !== "object") continue;
+          const actionText = extractElementText(action as Record<string, unknown>);
+          if (actionText) actionTexts.push(actionText);
+        }
+        return actionTexts.join(" ");
+      }
+      break;
+    }
+    case "form": {
+      // Form - extract elements
+      if (Array.isArray(prop.elements)) {
+        return "<form>\n" + extractElementsText(prop.elements) + "\n</form>";
+      }
+      return "<form>";
+    }
+    case "interactive_container": {
+      // Interactive container - extract elements
+      if (Array.isArray(prop.elements)) {
+        return extractElementsText(prop.elements);
+      }
+      break;
+    }
+    case "repeat": {
+      // Repeat - extract elements
+      if (Array.isArray(prop.elements)) {
+        return extractElementsText(prop.elements);
+      }
+      break;
+    }
+    case "table": {
+      // Table - simplified representation
+      const columns = prop.columns as unknown[] | undefined;
+      if (Array.isArray(columns) && columns.length > 0) {
+        return `📊 表格 (${columns.length}列)`;
+      }
+      return "📊 表格";
+    }
+    case "chart": {
+      // Chart
+      return "📈 图表";
+    }
+    case "audio": {
+      return "🎵 音频";
+    }
+    case "video": {
+      return "🎬 视频";
+    }
+    case "person":
+    case "person_v1":
+    case "avatar": {
+      // Person mention
+      const userID = (prop.userID as string) || "";
+      return userID ? `@${userID}` : "@用户";
+    }
+    case "person_list": {
+      // Person list
+      const persons = prop.persons as unknown[] | undefined;
+      if (Array.isArray(persons) && persons.length > 0) {
+        return `@${persons.length}人`;
+      }
+      return "@用户列表";
+    }
+    case "text_tag": {
+      // Text tag
+      const textElem = prop.text;
+      if (textElem && typeof textElem === "object") {
+        const text = extractTextContent(textElem);
+        return text ? `「${text}」` : "";
+      }
+      break;
+    }
+    case "number_tag": {
+      // Number tag
+      const textElem = prop.text;
+      if (textElem && typeof textElem === "object") {
+        return extractTextContent(textElem);
+      }
+      break;
+    }
+    case "local_datetime": {
+      // Local datetime
+      const fallbackText = prop.fallbackText as string | undefined;
+      return fallbackText || "📅";
+    }
+    case "fallback_text": {
+      // Fallback text
+      const textElem = prop.text;
+      if (textElem && typeof textElem === "object") {
+        return extractTextContent(textElem);
+      }
+      if (Array.isArray(prop.elements)) {
+        return extractMarkdownElements(prop.elements);
+      }
+      break;
+    }
+    case "input":
+    case "select_static":
+    case "multi_select_static":
+    case "select_person":
+    case "multi_select_person":
+    case "select_img":
+    case "date_picker":
+    case "picker_time":
+    case "picker_datetime":
+    case "checker":
+    case "overflow": {
+      // Form inputs - extract label/placeholder
+      const label = prop.label;
+      if (label && typeof label === "object") {
+        const labelText = extractTextContent(label);
+        if (labelText) return `[${labelText}]`;
+      }
+      const placeholder = prop.placeholder;
+      if (placeholder && typeof placeholder === "object") {
+        const placeholderText = extractTextContent(placeholder);
+        if (placeholderText) return `[${placeholderText}]`;
+      }
+      return "[输入框]";
+    }
+    case "card_header":
+    case "custom_icon":
+    case "standard_icon": {
+      // Ignore these elements
+      return "";
+    }
+  }
+
+  // Fallback: try to extract any text content
+  if (typeof prop.content === "string") {
+    return prop.content;
+  }
+  if (typeof prop.text === "string") {
+    return prop.text;
+  }
+
+  return "";
+}
+
+function extractTextContent(textElem: unknown): string {
+  if (textElem == null) return "";
+  if (typeof textElem === "string") return textElem;
+
+  if (typeof textElem !== "object") return "";
+
+  const elem = textElem as Record<string, unknown>;
+
+  // Handle property wrapper
+  const prop = (
+    elem.property && typeof elem.property === "object" ? elem.property : elem
+  ) as Record<string, unknown>;
+
+  // Try i18n content first
+  const i18n = prop.i18nContent as Record<string, unknown> | undefined;
+  if (i18n && typeof i18n === "object") {
+    for (const lang of ["zh_cn", "en_us", "ja_jp"]) {
+      const t = i18n[lang];
+      if (typeof t === "string" && t) return t;
+    }
+  }
+
+  // Try content field
+  if (typeof prop.content === "string") {
+    return prop.content;
+  }
+
+  // Try elements array (inline, no newlines)
+  if (Array.isArray(prop.elements)) {
+    const texts: string[] = [];
+    for (const el of prop.elements) {
+      if (el && typeof el === "object") {
+        const t = extractTextContent(el);
+        if (t) texts.push(t);
+      }
+    }
+    return texts.join("");
+  }
+
+  // Try text field
+  if (typeof prop.text === "string") {
+    return prop.text;
+  }
+
+  return "";
+}
+
+interface TextStyle {
+  bold: boolean;
+  italic: boolean;
+  strikethrough: boolean;
+}
+
+function extractTextStyle(prop: Record<string, unknown>): TextStyle {
+  const style: TextStyle = {
+    bold: false,
+    italic: false,
+    strikethrough: false,
+  };
+
+  const textStyle = prop.textStyle as Record<string, unknown> | undefined;
+  if (!textStyle || typeof textStyle !== "object") return style;
+
+  const attrs = textStyle.attributes as unknown[] | undefined;
+  if (Array.isArray(attrs)) {
+    for (const attr of attrs) {
+      if (typeof attr !== "string") continue;
+      switch (attr) {
+        case "bold":
+          style.bold = true;
+          break;
+        case "italic":
+          style.italic = true;
+          break;
+        case "strikethrough":
+          style.strikethrough = true;
+          break;
+      }
+    }
+  }
+
+  return style;
+}
+
+function applyTextStyle(content: string, style: TextStyle): string {
+  if (!content) return content;
+  if (style.strikethrough) content = `~~${content}~~`;
+  if (style.italic) content = `*${content}*`;
+  if (style.bold) content = `**${content}**`;
+  return content;
 }
 
 function parseQuotedMessageContent(rawContent: string, msgType: string): string {
@@ -175,8 +704,14 @@ export async function getMessageFeishu(params: {
   const client = createFeishuClient(account);
 
   try {
+    const params = {
+      user_id_type: "open_id" as const,
+      // Request raw card content so interactive messages include `json_card`.
+      card_msg_content_type: "raw_card_content" as const,
+    };
     const response = (await client.im.message.get({
       path: { message_id: messageId },
+      params,
     })) as {
       code?: number;
       msg?: string;

@@ -69,6 +69,85 @@ describe("getMessageFeishu", () => {
     );
   });
 
+  it("extracts text content from raw_card_content json_card interactive messages", async () => {
+    mockClientGet.mockResolvedValueOnce({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_raw_card",
+            chat_id: "oc_raw_card",
+            msg_type: "interactive",
+            body: {
+              content: JSON.stringify({
+                json_card: JSON.stringify({
+                  body: {
+                    elements: [
+                      { tag: "markdown", content: "hello raw" },
+                      { tag: "div", text: { content: "world raw" } },
+                    ],
+                  },
+                }),
+              }),
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await getMessageFeishu({
+      cfg: {} as ClawdbotConfig,
+      messageId: "om_raw_card",
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        messageId: "om_raw_card",
+        chatId: "oc_raw_card",
+        contentType: "interactive",
+        content: "hello raw\nworld raw",
+      }),
+    );
+  });
+
+  it("extracts text content from schema 2.0 body.property.elements cards", async () => {
+    mockClientGet.mockResolvedValueOnce({
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: "om_schema2",
+            chat_id: "oc_schema2",
+            msg_type: "interactive",
+            body: {
+              content: JSON.stringify({
+                body: {
+                  property: {
+                    elements: [{ tag: "markdown", content: "schema 2.0" }],
+                  },
+                },
+              }),
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await getMessageFeishu({
+      cfg: {} as ClawdbotConfig,
+      messageId: "om_schema2",
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        messageId: "om_schema2",
+        chatId: "oc_schema2",
+        contentType: "interactive",
+        content: "schema 2.0",
+      }),
+    );
+  });
+
   it("extracts text content from post messages", async () => {
     mockClientGet.mockResolvedValueOnce({
       code: 0,
