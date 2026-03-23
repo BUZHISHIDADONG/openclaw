@@ -1,4 +1,5 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
+import type { InteractiveReply } from "../interactive/payload.js";
 import type { TypingController } from "./reply/typing.js";
 
 export type BlockReplyContext = {
@@ -58,6 +59,10 @@ export type GetReplyOptions = {
     phase?: string;
     toolCallId?: string;
   }) => Promise<void> | void;
+  /** Called when context auto-compaction starts (allows UX feedback during the pause). */
+  onCompactionStart?: () => Promise<void> | void;
+  /** Called when context auto-compaction completes. */
+  onCompactionEnd?: () => Promise<void> | void;
   /** Low-level agent stream events for channel-specific live UIs. */
   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => Promise<void> | void;
   /** Called when the actual model is selected (including after fallback).
@@ -78,6 +83,10 @@ export type ReplyPayload = {
   text?: string;
   mediaUrl?: string;
   mediaUrls?: string[];
+  interactive?: InteractiveReply;
+  btw?: {
+    question: string;
+  };
   replyToId?: string;
   replyToTag?: boolean;
   /** True when [[reply_to_current]] was present but not yet mapped to a message id. */
@@ -88,6 +97,10 @@ export type ReplyPayload = {
   /** Marks this payload as a reasoning/thinking block. Channels that do not
    *  have a dedicated reasoning lane (e.g. WhatsApp, web) should suppress it. */
   isReasoning?: boolean;
+  /** Marks this payload as a compaction status notice (start/end).
+   *  Should be excluded from TTS transcript accumulation so compaction
+   *  status lines are not synthesised into the spoken assistant reply. */
+  isCompactionNotice?: boolean;
   /** Channel-specific payload data (per-channel envelope). */
   channelData?: Record<string, unknown>;
 };

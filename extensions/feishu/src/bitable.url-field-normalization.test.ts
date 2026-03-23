@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("./client.js", () => ({
   // oxlint-disable-next-line typescript/no-explicit-any
-  createFeishuClient: (account: any) => mocks.createFeishuClient(account),
+  createFeishuClient: (_account: any) => mocks.createFeishuClient(),
 }));
 
 function createConfig(): OpenClawPluginApi["config"] {

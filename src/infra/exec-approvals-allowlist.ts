@@ -1,6 +1,5 @@
 import path from "node:path";
 import {
-  DEFAULT_SAFE_BINS,
   analyzeShellCommand,
   isWindowsPlatform,
   matchAllowlist,
@@ -13,6 +12,7 @@ import {
 } from "./exec-approvals-analysis.js";
 import type { ExecAllowlistEntry } from "./exec-approvals.js";
 import {
+  DEFAULT_SAFE_BINS,
   SAFE_BIN_PROFILES,
   type SafeBinProfile,
   validateSafeBinArgv,
@@ -25,12 +25,13 @@ import {
   unwrapKnownShellMultiplexerInvocation,
   unwrapKnownDispatchWrapperInvocation,
 } from "./exec-wrapper-resolution.js";
+import { expandHomePrefix } from "./home-dir.js";
 
 function hasShellLineContinuation(command: string): boolean {
   return /\\(?:\r\n|\n|\r)/.test(command);
 }
 
-export function normalizeSafeBins(entries?: string[]): Set<string> {
+export function normalizeSafeBins(entries?: readonly string[]): Set<string> {
   if (!Array.isArray(entries)) {
     return new Set();
   }
@@ -40,7 +41,7 @@ export function normalizeSafeBins(entries?: string[]): Set<string> {
   return new Set(normalized);
 }
 
-export function resolveSafeBins(entries?: string[] | null): Set<string> {
+export function resolveSafeBins(entries?: readonly string[] | null): Set<string> {
   if (entries === undefined) {
     return normalizeSafeBins(DEFAULT_SAFE_BINS);
   }
@@ -91,7 +92,7 @@ export function isSafeBinUsage(params: {
   if (!profile) {
     return false;
   }
-  return validateSafeBinArgv(argv, profile);
+  return validateSafeBinArgv(argv, profile, { binName: execName });
 }
 
 function isPathScopedExecutableToken(token: string): boolean {
@@ -216,12 +217,30 @@ function evaluateSegments(
       segment.resolution?.effectiveArgv && segment.resolution.effectiveArgv.length > 0
         ? segment.resolution.effectiveArgv
         : segment.argv;
+    const allowlistSegment =
+      effectiveArgv === segment.argv ? segment : { ...segment, argv: effectiveArgv };
     const candidatePath = resolveAllowlistCandidatePath(segment.resolution, params.cwd);
     const candidateResolution =
       candidatePath && segment.resolution
         ? { ...segment.resolution, resolvedPath: candidatePath }
         : segment.resolution;
-    const match = matchAllowlist(params.allowlist, candidateResolution);
+    const executableMatch = matchAllowlist(params.allowlist, candidateResolution);
+    const inlineCommand = extractShellWrapperInlineCommand(allowlistSegment.argv);
+    const shellScriptCandidatePath =
+      inlineCommand === null
+        ? resolveShellWrapperScriptCandidatePath({
+            segment: allowlistSegment,
+            cwd: params.cwd,
+          })
+        : undefined;
+    const shellScriptMatch = shellScriptCandidatePath
+      ? matchAllowlist(params.allowlist, {
+          rawExecutable: shellScriptCandidatePath,
+          resolvedPath: shellScriptCandidatePath,
+          executableName: path.basename(shellScriptCandidatePath),
+        })
+      : null;
+    const match = executableMatch ?? shellScriptMatch;
     if (match) {
       matches.push(match);
     }
@@ -327,6 +346,74 @@ function isDispatchWrapperSegment(segment: ExecCommandSegment): boolean {
   return hasSegmentExecutableMatch(segment, isDispatchWrapperExecutable);
 }
 
+const SHELL_WRAPPER_OPTIONS_WITH_VALUE = new Set([
+  "-c",
+  "--command",
+  "-o",
+  "-O",
+  "+O",
+  "--rcfile",
+  "--init-file",
+  "--startup-file",
+]);
+
+function resolveShellWrapperScriptCandidatePath(params: {
+  segment: ExecCommandSegment;
+  cwd?: string;
+}): string | undefined {
+  if (!isShellWrapperSegment(params.segment)) {
+    return undefined;
+  }
+
+  const argv = params.segment.argv;
+  if (!Array.isArray(argv) || argv.length < 2) {
+    return undefined;
+  }
+
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx]?.trim() ?? "";
+    if (!token) {
+      idx += 1;
+      continue;
+    }
+    if (token === "--") {
+      idx += 1;
+      break;
+    }
+    if (token === "-c" || token === "--command") {
+      return undefined;
+    }
+    if (/^-[^-]*c[^-]*$/i.test(token)) {
+      return undefined;
+    }
+    if (token === "-s" || /^-[^-]*s[^-]*$/i.test(token)) {
+      return undefined;
+    }
+    if (SHELL_WRAPPER_OPTIONS_WITH_VALUE.has(token)) {
+      idx += 2;
+      continue;
+    }
+    if (token.startsWith("-") || token.startsWith("+")) {
+      idx += 1;
+      continue;
+    }
+    break;
+  }
+
+  const scriptToken = argv[idx]?.trim();
+  if (!scriptToken) {
+    return undefined;
+  }
+  if (path.isAbsolute(scriptToken)) {
+    return scriptToken;
+  }
+
+  const expanded = scriptToken.startsWith("~") ? expandHomePrefix(scriptToken) : scriptToken;
+  const base = params.cwd && params.cwd.trim().length > 0 ? params.cwd : process.cwd();
+  return path.resolve(base, expanded);
+}
+
 function collectAllowAlwaysPatterns(params: {
   segment: ExecCommandSegment;
   cwd?: string;
@@ -382,6 +469,13 @@ function collectAllowAlwaysPatterns(params: {
   }
   const inlineCommand = extractShellWrapperInlineCommand(params.segment.argv);
   if (!inlineCommand) {
+    const scriptPath = resolveShellWrapperScriptCandidatePath({
+      segment: params.segment,
+      cwd: params.cwd,
+    });
+    if (scriptPath) {
+      params.out.add(scriptPath);
+    }
     return;
   }
   const nested = analyzeShellCommand({

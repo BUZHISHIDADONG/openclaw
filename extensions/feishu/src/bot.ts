@@ -1,9 +1,8 @@
-import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk/feishu";
 import {
   buildAgentMediaPayload,
   buildPendingHistoryContextFromMap,
   clearHistoryEntriesIfEnabled,
-  createScopedPairingAccess,
+  createChannelPairingController,
   DEFAULT_GROUP_HISTORY_LIMIT,
   type HistoryEntry,
   normalizeAgentId,
@@ -11,7 +10,9 @@ import {
   resolveOpenProviderRuntimeGroupPolicy,
   resolveDefaultGroupPolicy,
   warnMissingProviderGroupPolicyFallbackOnce,
-} from "openclaw/plugin-sdk/feishu";
+  type ClawdbotConfig,
+  type RuntimeEnv,
+} from "../runtime-api.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import {
@@ -1256,7 +1257,7 @@ export async function handleFeishuMessage(params: {
 
   try {
     const core = getFeishuRuntime();
-    const pairing = createScopedPairingAccess({
+    const pairing = createChannelPairingController({
       core,
       channel: "feishu",
       accountId: account.accountId,

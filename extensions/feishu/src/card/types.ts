@@ -5,7 +5,7 @@
  * Type definitions for the Feishu card subsystem.
  */
 
-import type { ClawdbotConfig, ReplyPayload } from "openclaw/plugin-sdk";
+import type { ClawdbotConfig, ReplyPayload } from "../../runtime-api.js";
 
 // ---------------------------------------------------------------------------
 // Card Phase State Machine

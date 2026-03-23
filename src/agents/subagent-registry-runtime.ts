@@ -7,4 +7,7 @@ export {
   resolveRequesterForChildSession,
   resolveWorkflowIdForChildSession,
   summarizeWorkflowRuns,
+  listSubagentRunsForRequester,
+  replaceSubagentRunAfterSteer,
+  shouldIgnorePostCompletionAnnounceForSession,
 } from "./subagent-registry.js";

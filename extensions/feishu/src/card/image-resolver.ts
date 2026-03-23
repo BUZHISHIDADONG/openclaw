@@ -9,7 +9,7 @@
  * replacing them with `![alt](img_xxx)` that Feishu cards can render.
  */
 
-import type { ClawdbotConfig } from "openclaw/plugin-sdk";
+import type { ClawdbotConfig } from "../../runtime-api.js";
 import { uploadImageFeishu } from "../media.js";
 
 /** Matches complete markdown image syntax: `![alt](value)` */
