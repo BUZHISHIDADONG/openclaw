@@ -1,4 +1,3 @@
-import type { ChannelMeta, ChannelPlugin, ClawdbotConfig } from "openclaw/plugin-sdk/feishu";
 import {
   buildBaseChannelStatusSummary,
   createDefaultChannelRuntimeState,
@@ -6,7 +5,10 @@ import {
   PAIRING_APPROVED_MESSAGE,
   resolveAllowlistProviderRuntimeGroupPolicy,
   resolveDefaultGroupPolicy,
-} from "openclaw/plugin-sdk/feishu";
+  type ChannelMeta,
+  type ChannelPlugin,
+  type ClawdbotConfig,
+} from "../runtime-api.js";
 import {
   resolveFeishuAccount,
   resolveFeishuCredentials,
@@ -19,11 +21,14 @@ import {
   listFeishuDirectoryPeersLive,
   listFeishuDirectoryGroupsLive,
 } from "./directory.js";
-import { feishuOnboardingAdapter } from "./onboarding.js";
+import { monitorFeishuProvider } from "./monitor.js";
 import { feishuOutbound } from "./outbound.js";
 import { resolveFeishuGroupToolPolicy } from "./policy.js";
 import { probeFeishu } from "./probe.js";
+import { setFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu } from "./send.js";
+import { feishuSetupAdapter } from "./setup-core.js";
+import { feishuSetupWizard } from "./setup-surface.js";
 import { normalizeFeishuTarget, looksLikeFeishuId, formatFeishuTarget } from "./targets.js";
 import type { ResolvedFeishuAccount, FeishuConfig } from "./types.js";
 
@@ -277,44 +282,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
       ];
     },
   },
-  setup: {
-    resolveAccountId: () => DEFAULT_ACCOUNT_ID,
-    applyAccountConfig: ({ cfg, accountId }) => {
-      const isDefault = !accountId || accountId === DEFAULT_ACCOUNT_ID;
-
-      if (isDefault) {
-        return {
-          ...cfg,
-          channels: {
-            ...cfg.channels,
-            feishu: {
-              ...cfg.channels?.feishu,
-              enabled: true,
-            },
-          },
-        };
-      }
-
-      const feishuCfg = cfg.channels?.feishu as FeishuConfig | undefined;
-      return {
-        ...cfg,
-        channels: {
-          ...cfg.channels,
-          feishu: {
-            ...feishuCfg,
-            accounts: {
-              ...feishuCfg?.accounts,
-              [accountId]: {
-                ...feishuCfg?.accounts?.[accountId],
-                enabled: true,
-              },
-            },
-          },
-        },
-      };
-    },
-  },
-  onboarding: feishuOnboardingAdapter,
+  setup: feishuSetupAdapter,
+  setupWizard: feishuSetupWizard,
   messaging: {
     normalizeTarget: (raw) => normalizeFeishuTarget(raw) ?? undefined,
     targetResolver: {
@@ -380,7 +349,11 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
   },
   gateway: {
     startAccount: async (ctx) => {
-      const { monitorFeishuProvider } = await import("./monitor.js");
+      if (ctx.pluginRuntime) {
+        // Refresh the Feishu runtime slot on account startup so monitor imports
+        // always observe the canonical Plugin SDK runtime.
+        setFeishuRuntime(ctx.pluginRuntime);
+      }
       const account = resolveFeishuAccount({ cfg: ctx.cfg, accountId: ctx.accountId });
       const port = account.config?.webhookPort ?? null;
       ctx.setStatus({ accountId: ctx.accountId, port });

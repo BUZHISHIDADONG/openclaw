@@ -1,12 +1,12 @@
 import {
-  createReplyPrefixContext,
   createTypingCallbacks,
+  createReplyPrefixContext,
   logTypingFailure,
+  onSubagentRegistryChange,
   type ClawdbotConfig,
   type ReplyPayload,
   type RuntimeEnv,
-} from "openclaw/plugin-sdk/feishu";
-import { onSubagentRegistryChange } from "../../../src/agents/subagent-registry-runtime.js";
+} from "../runtime-api.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { sendMediaFeishu } from "./media.js";

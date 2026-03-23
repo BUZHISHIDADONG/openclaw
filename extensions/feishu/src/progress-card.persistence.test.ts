@@ -41,9 +41,16 @@ const sendCardFeishuMock = vi.hoisted(() =>
     chatId: to,
   })),
 );
-const updateCardFeishuMock = vi.hoisted(() => vi.fn(async () => undefined));
+const updateCardFeishuMock = vi.hoisted(() =>
+  vi.fn(async (_params?: { messageId: string }) => undefined),
+);
 
 vi.mock("fs/promises", () => ({
+  default: {
+    readFile: mockedFs.readFile,
+    mkdir: mockedFs.mkdir,
+    writeFile: mockedFs.writeFile,
+  },
   readFile: mockedFs.readFile,
   mkdir: mockedFs.mkdir,
   writeFile: mockedFs.writeFile,
@@ -151,7 +158,8 @@ describe("progress card persistence", () => {
       ),
     );
 
-    updateCardFeishuMock.mockImplementation(async ({ messageId }: { messageId: string }) => {
+    updateCardFeishuMock.mockImplementation(async (params?: { messageId: string }) => {
+      const messageId = params?.messageId;
       if (messageId === "msg:keep") {
         throw new Error("temporary Feishu API error");
       }

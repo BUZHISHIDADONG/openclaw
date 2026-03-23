@@ -1,9 +1,12 @@
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
-import { isSilentReplyText } from "openclaw/plugin-sdk";
-import type { ClawdbotConfig } from "openclaw/plugin-sdk/feishu";
-import { SILENT_REPLY_TOKEN, stripSilentToken } from "../../../src/auto-reply/tokens.js";
+import {
+  isSilentReplyText,
+  SILENT_REPLY_TOKEN,
+  stripSilentToken,
+  type ClawdbotConfig,
+} from "../runtime-api.js";
 import type { MentionTarget } from "./mention.js";
 import { buildMentionedCardContent } from "./mention.js";
 import { sendCardFeishu, updateCardFeishu } from "./send.js";
@@ -1289,6 +1292,10 @@ export class FeishuProgressCardSession {
     }
     if (this.parentTurnCompleted && this.backgroundPhaseSeen) {
       if (this.parentFinalDelivery === "inline") {
+        if (this.hasObservedNewFinalReply()) {
+          await this.adoptObservedFinalReply();
+          return;
+        }
         const now = Date.now();
         if (this.waitingFinalStartedAt === undefined) {
           this.waitingFinalStartedAt = now;

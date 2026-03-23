@@ -91,6 +91,8 @@ run_gateway() {
   exec env \
     PATH="$PATH" \
     NODE_OPTIONS="$node_options_combined" \
+    OPENCLAW_INCLUDE_OPTIONAL_BUNDLED="${OPENCLAW_INCLUDE_OPTIONAL_BUNDLED:-1}" \
+    OPENCLAW_BUNDLED_PLUGINS_DIR="${OPENCLAW_BUNDLED_PLUGINS_DIR:-$ROOT_DIR/dist-runtime/extensions}" \
     HTTP_PROXY="${HTTP_PROXY-}" \
     HTTPS_PROXY="${HTTPS_PROXY-}" \
     http_proxy="${http_proxy-}" \
@@ -130,6 +132,8 @@ setsid -f env \
   STOP_PATTERN="$STOP_PATTERN" \
   RESTART_DELAY_SECONDS="$RESTART_DELAY_SECONDS" \
   PATH="$PATH" \
+  OPENCLAW_INCLUDE_OPTIONAL_BUNDLED="${OPENCLAW_INCLUDE_OPTIONAL_BUNDLED:-1}" \
+  OPENCLAW_BUNDLED_PLUGINS_DIR="${OPENCLAW_BUNDLED_PLUGINS_DIR:-$ROOT_DIR/dist-runtime/extensions}" \
   HTTP_PROXY="${HTTP_PROXY-}" \
   HTTPS_PROXY="${HTTPS_PROXY-}" \
   http_proxy="${http_proxy-}" \
