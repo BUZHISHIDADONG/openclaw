@@ -14,6 +14,12 @@ import {
 } from "openclaw/plugin-sdk/feishu";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
+import {
+  convertMessageContent,
+  buildConvertContextFromItem,
+  type ConvertContext,
+  type ApiMessageItem,
+} from "./converters/index.js";
 import { tryRecordMessage, tryRecordMessagePersistent } from "./dedup.js";
 import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
 import { normalizeFeishuExternalKey } from "./external-keys.js";
@@ -351,6 +357,73 @@ function parseMessageContent(content: string, messageType: string): string {
     return content;
   } catch {
     return content;
+  }
+}
+
+/**
+ * Parse message content using new converter system.
+ * Returns formatted content and resource descriptors.
+ */
+async function parseMessageContentWithConverters(params: {
+  event: FeishuMessageEvent;
+  botOpenId?: string;
+  accountId?: string;
+  log?: (...args: any[]) => void;
+}): Promise<{
+  content: string;
+  resources: Array<{ type: string; fileKey: string; fileName?: string }>;
+}> {
+  const { event, botOpenId, accountId, log } = params;
+
+  try {
+    // Build API message item from event
+    const item: ApiMessageItem = {
+      message_id: event.message.message_id,
+      msg_type: event.message.message_type,
+      create_time: event.message.create_time,
+      body: { content: event.message.content },
+      sender: {
+        id: event.sender.sender_id.open_id || event.sender.sender_id.user_id,
+        sender_type: event.sender.sender_type,
+      },
+      mentions: event.message.mentions?.map((m) => ({
+        key: m.key,
+        id: m.id.open_id || m.id.user_id || "",
+        name: m.name,
+      })),
+      parent_id: event.message.parent_id,
+      thread_id: event.message.thread_id,
+    };
+
+    // Build convert context
+    const ctx = buildConvertContextFromItem(
+      item,
+      event.message.message_id,
+      accountId,
+      undefined, // resolveUserName callback - can be added later
+    );
+
+    // Set additional context properties
+    ctx.botOpenId = botOpenId;
+    ctx.stripBotMentions = event.message.chat_type === "p2p";
+
+    // Convert message content
+    const result = await convertMessageContent(
+      event.message.content,
+      event.message.message_type,
+      ctx,
+    );
+
+    log?.(`feishu: new converter result: ${result.content.substring(0, 100)}...`);
+    log?.(`feishu: new converter resources: ${result.resources.length}`);
+
+    return {
+      content: result.content,
+      resources: result.resources,
+    };
+  } catch (error) {
+    log?.(`feishu: new converter failed: ${error}`);
+    throw error;
   }
 }
 
@@ -820,6 +893,70 @@ export function parseFeishuMessageEvent(
   return ctx;
 }
 
+/**
+ * Parse Feishu message event using new converter system.
+ * Returns formatted context with resources.
+ */
+export async function parseFeishuMessageEventWithConverters(params: {
+  event: FeishuMessageEvent;
+  botOpenId?: string;
+  botName?: string;
+  accountId?: string;
+  log?: (...args: any[]) => void;
+}): Promise<
+  FeishuMessageContext & { resources?: Array<{ type: string; fileKey: string; fileName?: string }> }
+> {
+  const { event, botOpenId, botName, accountId, log } = params;
+
+  try {
+    // Use new converter system
+    const converterResult = await parseMessageContentWithConverters({
+      event,
+      botOpenId,
+      accountId,
+      log,
+    });
+
+    const mentionedBot = checkBotMentioned(event, botOpenId, botName);
+    const hasAnyMention = (event.message.mentions?.length ?? 0) > 0;
+    const senderOpenId = event.sender.sender_id.open_id?.trim();
+    const senderUserId = event.sender.sender_id.user_id?.trim();
+    const senderFallbackId = senderOpenId || senderUserId || "";
+
+    const ctx: FeishuMessageContext & {
+      resources?: Array<{ type: string; fileKey: string; fileName?: string }>;
+    } = {
+      chatId: event.message.chat_id,
+      messageId: event.message.message_id,
+      senderId: senderUserId || senderOpenId || "",
+      senderOpenId: senderFallbackId,
+      chatType: event.message.chat_type,
+      mentionedBot,
+      hasAnyMention,
+      rootId: event.message.root_id || undefined,
+      parentId: event.message.parent_id || undefined,
+      threadId: event.message.thread_id || undefined,
+      content: converterResult.content,
+      contentType: event.message.message_type,
+      resources: converterResult.resources,
+    };
+
+    // Detect mention forward request
+    if (isMentionForwardRequest(event, botOpenId)) {
+      const mentionTargets = extractMentionTargets(event, botOpenId);
+      if (mentionTargets.length > 0) {
+        ctx.mentionTargets = mentionTargets;
+      }
+    }
+
+    return ctx;
+  } catch (error) {
+    log?.(`feishu: new converter failed, falling back to legacy parser: ${error}`);
+    // Fallback to legacy parser
+    return parseFeishuMessageEvent(event, botOpenId, botName);
+  }
+}
+
 export function buildFeishuAgentBody(params: {
   ctx: Pick<
     FeishuMessageContext,
@@ -897,7 +1034,40 @@ export async function handleFeishuMessage(params: {
     return;
   }
 
-  let ctx = parseFeishuMessageEvent(event, botOpenId, botName);
+  // Check if new converters are enabled (default: true)
+  // Priority: messageConverter.useNewConverters > top-level useNewConverters (legacy)
+  const useNewConverters =
+    feishuCfg?.messageConverter?.useNewConverters ?? feishuCfg?.useNewConverters ?? true;
+
+  let ctx: FeishuMessageContext & {
+    resources?: Array<{ type: string; fileKey: string; fileName?: string }>;
+  };
+
+  if (useNewConverters) {
+    log(`feishu[${account.accountId}]: using new converter system`);
+    try {
+      ctx = await parseFeishuMessageEventWithConverters({
+        event,
+        botOpenId,
+        botName,
+        accountId: account.accountId,
+        log,
+      });
+      log(
+        `feishu[${account.accountId}]: new converter parsed content: ${ctx.content.substring(0, 100)}...`,
+      );
+      if (ctx.resources && ctx.resources.length > 0) {
+        log(`feishu[${account.accountId}]: new converter found ${ctx.resources.length} resources`);
+      }
+    } catch (error) {
+      log(`feishu[${account.accountId}]: new converter failed, using legacy parser: ${error}`);
+      ctx = parseFeishuMessageEvent(event, botOpenId, botName);
+    }
+  } else {
+    log(`feishu[${account.accountId}]: using legacy parser (useNewConverters=false)`);
+    ctx = parseFeishuMessageEvent(event, botOpenId, botName);
+  }
+
   const isGroup = ctx.chatType === "group";
   const isDirect = !isGroup;
   const senderUserId = event.sender.sender_id.user_id?.trim() || undefined;

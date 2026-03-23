@@ -22,6 +22,7 @@ import { isMentionForwardRequest } from "./mention.js";
 import { fetchBotOpenIdForMonitor } from "./monitor.startup.js";
 import { botOpenIds } from "./monitor.state.js";
 import { monitorWebhook, monitorWebSocket } from "./monitor.transport.js";
+import { recoverInterruptedProgressCards } from "./progress-card.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu } from "./send.js";
 import type { ResolvedFeishuAccount } from "./types.js";
@@ -515,6 +516,9 @@ export async function monitorSingleAccount(params: MonitorSingleAccountParams): 
   if (warmupCount > 0) {
     log(`feishu[${accountId}]: dedup warmup loaded ${warmupCount} entries from disk`);
   }
+
+  // Recover interrupted progress cards
+  await recoverInterruptedProgressCards({ cfg, accountId, logger: log });
 
   const eventDispatcher = createEventDispatcher(account);
   const chatHistories = new Map<string, HistoryEntry[]>();

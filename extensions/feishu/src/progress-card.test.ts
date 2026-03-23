@@ -696,4 +696,92 @@ describe("FeishuProgressCardSession", () => {
       vi.useRealTimers();
     }
   });
+
+  it("marks card as aborted after consecutive monitor failures", async () => {
+    vi.useFakeTimers();
+    try {
+      const getSnapshot = vi
+        .fn()
+        .mockResolvedValueOnce({
+          totalActiveRuns: 1,
+          activeRuns: [{ label: "researcher", elapsedMs: 1_000, timeoutSeconds: 1200 }],
+          totalTrackedRuns: 1,
+          completedSuccessfulRuns: 0,
+          completedFailedRuns: 0,
+        })
+        .mockRejectedValueOnce(new Error("Connection timeout"))
+        .mockRejectedValueOnce(new Error("Connection timeout"))
+        .mockRejectedValueOnce(new Error("Connection timeout"));
+
+      const session = new FeishuProgressCardSession({
+        cfg: {} as never,
+        chatId: "oc_chat",
+        chatType: "group",
+        targetSessionKey: "agent:main:feishu:group:oc_chat",
+        mode: "tools_summary",
+        backgroundMonitor: {
+          getSnapshot,
+          intervalMs: 1000,
+        },
+      });
+
+      await session.noteToolStart({ name: "read", phase: "start" });
+      await session.noteFinal("进度 20%：已派发 1 个子任务");
+      await session.noteIdle();
+
+      // 第一次轮询成功，显示后台任务
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // 后续3次轮询失败
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const patchedCard =
+        updateCardFeishuMock.mock.calls[updateCardFeishuMock.mock.calls.length - 1]?.[0]?.card;
+      const markdown = (
+        patchedCard as { body?: { elements?: Array<{ tag?: string; content?: string }> } }
+      ).body?.elements?.find((el) => el.tag === "markdown")?.content;
+
+      expect(markdown).toContain("后台连接中断");
+      expect(getSnapshot).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("progress card persistence and recovery", () => {
+  it("should recover interrupted cards on startup", async () => {
+    const cfg = {} as never;
+    const session = new FeishuProgressCardSession({
+      cfg,
+      chatId: "test-chat",
+      accountId: "main",
+      mode: "tools_summary",
+    });
+
+    await session.noteToolStart({ name: "read", phase: "start" });
+    // Wait for persistence to complete
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Clear in-memory state to simulate restart
+    resetFeishuProgressCardStateForTests();
+
+    // Simulate restart by calling recovery function
+    const { recoverInterruptedProgressCards } = await import("./progress-card.js");
+    await recoverInterruptedProgressCards({
+      cfg,
+      accountId: "main",
+      logger: vi.fn(),
+    });
+
+    // Verify that the card was updated to aborted state
+    const updateCalls = updateCardFeishuMock.mock.calls;
+    const recoveryUpdate = updateCalls.find((call) => {
+      const card = call[0].card;
+      return card.header.template === "red";
+    });
+    expect(recoveryUpdate).toBeDefined();
+  });
 });

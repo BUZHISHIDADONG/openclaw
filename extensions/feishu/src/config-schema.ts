@@ -51,6 +51,29 @@ const ProgressCardConfigSchema = z
   .strict()
   .optional();
 
+// Message converter configuration
+const MessageConverterConfigSchema = z
+  .object({
+    useNewConverters: z.boolean().optional(), // Use new converter system (default: true)
+    enableInteractiveCard: z.boolean().optional(), // Parse interactive cards (default: true)
+    enableMergeForward: z.boolean().optional(), // Parse merge_forward messages (default: true)
+    enableRichText: z.boolean().optional(), // Parse post (rich text) messages (default: true)
+  })
+  .strict()
+  .optional();
+
+// Streaming card advanced configuration
+const StreamingCardConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(), // Enable streaming cards (default: true)
+    throttleMs: z.number().int().positive().optional(), // Throttle interval in ms (default: 100 for CardKit, 1500 for IM patch)
+    enableReasoningDisplay: z.boolean().optional(), // Display thinking process (default: true)
+    enableImageResolver: z.boolean().optional(), // Enable async image upload (default: true)
+    enableUnavailableGuard: z.boolean().optional(), // Check message availability (default: true)
+  })
+  .strict()
+  .optional();
+
 const BlockStreamingCoalesceSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -175,11 +198,14 @@ const FeishuSharedConfigShape = {
   renderMode: RenderModeSchema,
   streaming: StreamingModeSchema,
   progressCard: ProgressCardConfigSchema,
+  messageConverter: MessageConverterConfigSchema,
+  streamingCard: StreamingCardConfigSchema,
   tools: FeishuToolsConfigSchema,
   replyInThread: ReplyInThreadSchema,
   reactionNotifications: ReactionNotificationModeSchema,
   typingIndicator: z.boolean().optional(),
   resolveSenderNames: z.boolean().optional(),
+  useNewConverters: z.boolean().optional(),
 };
 
 /**

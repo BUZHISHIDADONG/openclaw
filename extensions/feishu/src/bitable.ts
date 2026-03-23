@@ -38,6 +38,23 @@ function ensureLarkSuccess<T>(
   }
 }
 
+function larkErrorHint(err: LarkApiError): string | undefined {
+  // Common Bitable conversion failures.
+  // Keep these short; they show up in tool responses.
+  switch (err.code) {
+    case 1254068:
+      return "URL 字段格式错误：请传对象 {link: 'https://...'} 或 {text: '显示文本', link: 'https://...'}（不要直接传字符串 / 不要传数组）。";
+    case 1254064:
+      return "DateTime 字段格式错误：通常需要毫秒时间戳（number）或 Feishu 接受的日期时间格式。";
+    case 1254066:
+      return "User 字段格式错误：通常需要用户对象/数组（如 open_id / union_id），不能直接传名字字符串。";
+    case 1254015:
+      return "字段类型不匹配：检查字段类型（Text/Number/URL/DateTime/Attachment…）与传值形状是否一致。";
+    default:
+      return undefined;
+  }
+}
+
 /** Field type ID to human-readable name */
 const FIELD_TYPE_NAMES: Record<number, string> = {
   1: "Text",
@@ -62,6 +79,104 @@ const FIELD_TYPE_NAMES: Record<number, string> = {
   1004: "ModifiedUser",
   1005: "AutoNumber",
 };
+
+// ============ Field value normalization ============
+
+const FIELD_TYPE_CACHE_TTL_MS = 5 * 60_000;
+const fieldTypesByNameCache = new Map<string, { atMs: number; byName: Record<string, number> }>();
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function getFieldTypesByName(client: Lark.Client, appToken: string, tableId: string) {
+  const key = `${appToken}:${tableId}`;
+  const cached = fieldTypesByNameCache.get(key);
+  const now = Date.now();
+  if (cached && now - cached.atMs < FIELD_TYPE_CACHE_TTL_MS) {
+    return cached.byName;
+  }
+
+  const res = await client.bitable.appTableField.list({
+    path: { app_token: appToken, table_id: tableId },
+  });
+  ensureLarkSuccess(res, "bitable.appTableField.list", { appToken, tableId });
+
+  const byName: Record<string, number> = {};
+  for (const item of res.data?.items ?? []) {
+    const name = item.field_name;
+    const type = item.type;
+    if (name) {
+      byName[name] = type ?? 0;
+    }
+  }
+
+  fieldTypesByNameCache.set(key, { atMs: now, byName });
+  return byName;
+}
+
+function normalizeUrlFieldValue(fieldName: string, value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+
+  if (typeof value === "string") {
+    return { link: value.trim() };
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return null;
+    if (value.length === 1) return normalizeUrlFieldValue(fieldName, value[0]);
+    throw new Error(
+      `URL 字段 ${fieldName} 不支持数组形式；请传 {link:'https://...'} 或 {text:'显示文本', link:'https://...'}。`,
+    );
+  }
+
+  if (isPlainObject(value)) {
+    const link = value.link;
+    const text = value.text;
+
+    if (typeof link !== "string" || !link.trim()) {
+      throw new Error(`URL 字段 ${fieldName} 缺少 link（需要 {link:'https://...'}）。`);
+    }
+
+    const out: Record<string, unknown> = { link: link.trim() };
+    if (typeof text === "string" && text.trim()) {
+      out.text = text;
+    }
+    return out;
+  }
+
+  throw new Error(
+    `URL 字段 ${fieldName} 格式错误：需要 string 或 {link:string} 或 {text,link}，但收到 ${typeof value}。`,
+  );
+}
+
+async function normalizeFieldsForWrite(
+  client: Lark.Client,
+  appToken: string,
+  tableId: string,
+  fields: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const keys = Object.keys(fields ?? {});
+  if (keys.length === 0) return fields;
+
+  const typesByName = await getFieldTypesByName(client, appToken, tableId);
+
+  let mutated = false;
+  const next: Record<string, unknown> = { ...fields };
+
+  for (const name of keys) {
+    if (typesByName[name] === 15) {
+      const before = next[name];
+      const after = normalizeUrlFieldValue(name, before);
+      if (after !== before) {
+        next[name] = after;
+        mutated = true;
+      }
+    }
+  }
+
+  return mutated ? next : fields;
+}
 
 // ============ Core Functions ============
 
@@ -214,10 +329,12 @@ async function createRecord(
   tableId: string,
   fields: Record<string, unknown>,
 ) {
+  const normalizedFields = await normalizeFieldsForWrite(client, appToken, tableId, fields);
+
   const res = await client.bitable.appTableRecord.create({
     path: { app_token: appToken, table_id: tableId },
     // oxlint-disable-next-line typescript/no-explicit-any
-    data: { fields: fields as any },
+    data: { fields: normalizedFields as any },
   });
   ensureLarkSuccess(res, "bitable.appTableRecord.create", { appToken, tableId });
 
@@ -426,10 +543,12 @@ async function updateRecord(
   recordId: string,
   fields: Record<string, unknown>,
 ) {
+  const normalizedFields = await normalizeFieldsForWrite(client, appToken, tableId, fields);
+
   const res = await client.bitable.appTableRecord.update({
     path: { app_token: appToken, table_id: tableId, record_id: recordId },
     // oxlint-disable-next-line typescript/no-explicit-any
-    data: { fields: fields as any },
+    data: { fields: normalizedFields as any },
   });
   ensureLarkSuccess(res, "bitable.appTableRecord.update", { appToken, tableId, recordId });
 
@@ -571,6 +690,15 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
               }),
             );
           } catch (err) {
+            if (err instanceof LarkApiError) {
+              return json({
+                error: err.message,
+                code: err.code,
+                api: err.api,
+                hint: larkErrorHint(err),
+                context: err.context,
+              });
+            }
             return json({ error: err instanceof Error ? err.message : String(err) });
           }
         },

@@ -83,8 +83,13 @@ apps/ios/*.mobileprovision
 docs/.local/
 IDENTITY.md
 USER.md
+AGENTS.md
+CLAUDE.md
+my_docs/openclaw-control-ui-结构与使用教程.md
+src/gateway/server-methods/CLAUDE.md
 .tgz
 .idea
+.compare/
 
 # local tooling
 .serena/

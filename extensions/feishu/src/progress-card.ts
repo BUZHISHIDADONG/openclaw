@@ -1,3 +1,6 @@
+import * as fs from "fs/promises";
+import * as os from "os";
+import * as path from "path";
 import { isSilentReplyText } from "openclaw/plugin-sdk";
 import type { ClawdbotConfig } from "openclaw/plugin-sdk/feishu";
 import { SILENT_REPLY_TOKEN, stripSilentToken } from "../../../src/auto-reply/tokens.js";
@@ -92,6 +95,7 @@ const TOOL_LIMIT = 5;
 const SUMMARY_LIMIT = 140;
 const PREVIEW_LIMIT = 1200;
 const UPDATE_THROTTLE_MS = 500;
+const BACKGROUND_MONITOR_MAX_FAILURES = 3;
 const STOP_BUTTON_TEXT = "停止";
 const STOP_BUTTON_COMMAND = "/stop";
 const BACKGROUND_MONITOR_INTERVAL_MS = 4000;
@@ -100,9 +104,19 @@ const BACKGROUND_ACTIVITY_LIMIT = 120;
 const NO_FINAL_TEXT_NOTICE = "本轮无最终文本，仅执行工具/发送附件。";
 const STOP_REQUESTED_TTL_MS = 60 * 60_000;
 const WAITING_FINAL_TIMEOUT_MS = 10 * 60_000;
+const PERSISTENCE_FILE_PATH = path.join(os.homedir(), ".openclaw", "feishu-progress-cards.json");
 
 const stopRequestedCardIds = new Map<string, number>();
 const activeProgressCardSessions = new Set<FeishuProgressCardSession>();
+let persistenceMutationQueue: Promise<void> = Promise.resolve();
+
+type PersistedCardState = {
+  messageId: string;
+  chatId: string;
+  accountId: string;
+  stage: ProgressStage;
+  startedAt: number;
+};
 
 function isTerminalStage(stage: ProgressStage): boolean {
   return stage === "done" || stage === "aborted" || stage === "error";
@@ -139,6 +153,129 @@ export async function abortActiveFeishuProgressCards(params?: {
   await Promise.allSettled(sessions.map((session) => session.abort({ reason })));
 }
 
+async function loadPersistedCardStates(): Promise<PersistedCardState[]> {
+  try {
+    const content = await fs.readFile(PERSISTENCE_FILE_PATH, "utf-8");
+    const parsed = JSON.parse(content);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function savePersistedCardStates(states: PersistedCardState[]): Promise<void> {
+  try {
+    const dir = path.dirname(PERSISTENCE_FILE_PATH);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(PERSISTENCE_FILE_PATH, JSON.stringify(states, null, 2), "utf-8");
+  } catch (error) {
+    console.error("Failed to save persisted card states:", error);
+  }
+}
+
+function runPersistedStateMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const run = persistenceMutationQueue.then(operation, operation);
+  persistenceMutationQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+async function persistCardState(state: PersistedCardState): Promise<void> {
+  await runPersistedStateMutation(async () => {
+    const states = await loadPersistedCardStates();
+    const index = states.findIndex((s) => s.messageId === state.messageId);
+    if (index >= 0) {
+      states[index] = state;
+    } else {
+      states.push(state);
+    }
+    await savePersistedCardStates(states);
+  });
+}
+
+async function removePersistedCardState(messageId: string): Promise<void> {
+  await runPersistedStateMutation(async () => {
+    const states = await loadPersistedCardStates();
+    const filtered = states.filter((s) => s.messageId !== messageId);
+    await savePersistedCardStates(filtered);
+  });
+}
+
+export async function persistFeishuProgressCardStateForTests(
+  state: PersistedCardState,
+): Promise<void> {
+  if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
+    throw new Error(
+      "persistFeishuProgressCardStateForTests() is only available in test environments",
+    );
+  }
+  await persistCardState(state);
+}
+
+export async function recoverInterruptedProgressCards(params: {
+  cfg: ClawdbotConfig;
+  accountId: string;
+  logger?: (message: string) => void;
+}): Promise<void> {
+  const { cfg, accountId, logger } = params;
+  const log = logger ?? console.log;
+
+  const states = await runPersistedStateMutation(() => loadPersistedCardStates());
+  const interrupted = states.filter((s) => s.accountId === accountId && !isTerminalStage(s.stage));
+
+  if (interrupted.length === 0) {
+    return;
+  }
+
+  log(
+    `feishu[${accountId}]: found ${interrupted.length} interrupted progress cards, recovering...`,
+  );
+
+  const reason = "后台连接中断";
+  const recoveredMessageIds = new Set<string>();
+  const updates = interrupted.map(async (state) => {
+    try {
+      await updateCardFeishu({
+        cfg,
+        messageId: state.messageId,
+        card: buildProgressCard({
+          stage: "aborted",
+          abortMessage: reason,
+          mode: "tools_summary",
+          tools: [],
+          externalFinalNotice: false,
+          controlsEnabled: false,
+          backgroundRuns: [],
+          totalActiveRuns: 0,
+          totalTrackedRuns: 0,
+          completedSuccessfulRuns: 0,
+          completedFailedRuns: 0,
+          canStop: false,
+        }),
+        accountId,
+      });
+      recoveredMessageIds.add(state.messageId);
+      log(`feishu[${accountId}]: recovered card ${state.messageId}`);
+    } catch (error) {
+      log(`feishu[${accountId}]: failed to recover card ${state.messageId}: ${String(error)}`);
+    }
+  });
+
+  await Promise.allSettled(updates);
+
+  if (recoveredMessageIds.size === 0) {
+    return;
+  }
+
+  await runPersistedStateMutation(async () => {
+    const latestStates = await loadPersistedCardStates();
+    const remaining = latestStates.filter((s) => !recoveredMessageIds.has(s.messageId));
+    await savePersistedCardStates(remaining);
+  });
+}
+
 export function resetFeishuProgressCardStateForTests(): void {
   if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
     throw new Error(
@@ -147,6 +284,7 @@ export function resetFeishuProgressCardStateForTests(): void {
   }
   stopRequestedCardIds.clear();
   activeProgressCardSessions.clear();
+  persistenceMutationQueue = Promise.resolve();
 }
 
 function isFeishuProgressCardStopRequested(messageId: string | undefined): boolean {
@@ -707,6 +845,7 @@ export class FeishuProgressCardSession {
   private backgroundPhaseSeen = false;
   private parentTurnCompleted = false;
   private parentFinalDelivery: "none" | "inline" | "external" | "silent" = "none";
+  private backgroundMonitorFailureCount = 0;
   private waitingFinalStartedAt: number | undefined;
   private stopRequested = false;
   private backgroundChangeUnsub: (() => void) | null = null;
@@ -738,6 +877,26 @@ export class FeishuProgressCardSession {
       return true;
     }
     return (this.accountId?.trim() || "") === normalized;
+  }
+
+  private async persistState(): Promise<void> {
+    if (!this.messageId || !this.accountId) {
+      return;
+    }
+    await persistCardState({
+      messageId: this.messageId,
+      chatId: this.chatId,
+      accountId: this.accountId,
+      stage: this.stage,
+      startedAt: Date.now(),
+    });
+  }
+
+  private async removePersistedState(): Promise<void> {
+    if (!this.messageId) {
+      return;
+    }
+    await removePersistedCardState(this.messageId);
   }
 
   private getVisibleTools(): ToolEntry[] {
@@ -917,6 +1076,8 @@ export class FeishuProgressCardSession {
     this.updateLifecycleRegistration();
     this.ensureBackgroundChangeSubscription();
     this.scheduleBackgroundMonitor();
+    // Persist card state
+    await this.persistState();
     // Ensure the stop button callback can locate the originating card message id.
     // Best-effort: the card still functions without this patch.
     try {
@@ -942,6 +1103,12 @@ export class FeishuProgressCardSession {
     );
     this.dirty = false;
     this.lastFlushAt = Date.now();
+    // Persist state after update
+    await this.persistState();
+    // Remove persistence if terminal
+    if (isTerminalStage(this.stage)) {
+      await this.removePersistedState();
+    }
   }
 
   private scheduleFlush(): void {
@@ -973,7 +1140,7 @@ export class FeishuProgressCardSession {
     this.flushTimer = null;
   }
 
-  private async refreshBackgroundSnapshot(): Promise<void> {
+  private async refreshBackgroundSnapshot(): Promise<boolean> {
     if (!this.backgroundMonitor) {
       this.backgroundRuns = [];
       this.totalActiveRuns = 0;
@@ -983,10 +1150,11 @@ export class FeishuProgressCardSession {
       this.latestCompletedRun = undefined;
       this.latestRequesterReply = undefined;
       this.baselineRequesterReply = undefined;
-      return;
+      return true;
     }
     try {
       const snapshot = await this.backgroundMonitor.getSnapshot();
+      this.backgroundMonitorFailureCount = 0; // 重置失败计数
       this.backgroundRuns = snapshot?.activeRuns ?? [];
       this.totalActiveRuns = snapshot?.totalActiveRuns ?? this.backgroundRuns.length;
       this.totalTrackedRuns = Math.max(0, snapshot?.totalTrackedRuns ?? this.totalActiveRuns);
@@ -996,8 +1164,25 @@ export class FeishuProgressCardSession {
       this.latestRequesterReply = normalizeObservedReplyText(snapshot?.latestRequesterReply);
       this.baselineRequesterReply =
         normalizeObservedReplyText(snapshot?.baselineRequesterReply) ?? this.baselineRequesterReply;
-    } catch {
-      // Background monitoring is best-effort. Keep the last visible state on read errors.
+      return true;
+    } catch (error) {
+      // 累计失败次数
+      this.backgroundMonitorFailureCount++;
+
+      // 连续失败超过阈值，标记为异常中断
+      if (this.backgroundMonitorFailureCount >= BACKGROUND_MONITOR_MAX_FAILURES) {
+        this.stopBackgroundMonitor();
+        this.stopBackgroundChangeSubscription();
+        this.stage = "aborted";
+        this.abortMessage = "后台连接中断";
+        this.updateLifecycleRegistration();
+        await this.ensureStartedInternal();
+        this.dirty = true;
+        await this.flushNowInternal();
+        return false; // 返回 false 表示已中断
+      }
+      // 否则保持最后可见状态，继续尝试
+      return true;
     }
   }
 
@@ -1062,7 +1247,11 @@ export class FeishuProgressCardSession {
   }
 
   private async pollBackgroundMonitor(): Promise<void> {
-    await this.refreshBackgroundSnapshot();
+    const shouldContinue = await this.refreshBackgroundSnapshot();
+    if (!shouldContinue) {
+      // 已标记为中断，停止后续处理
+      return;
+    }
     if (this.totalTrackedRuns > 0) {
       this.backgroundPhaseSeen = true;
     }
@@ -1262,7 +1451,10 @@ export class FeishuProgressCardSession {
       this.waitingFinalStartedAt = undefined;
       this.previewText = mergeStreamingText(this.previewText, text);
       this.externalFinalNotice = false;
-      await this.refreshBackgroundSnapshot();
+      const shouldContinue = await this.refreshBackgroundSnapshot();
+      if (!shouldContinue) {
+        return;
+      }
       if (this.totalTrackedRuns > 0) {
         this.backgroundPhaseSeen = true;
       }
@@ -1299,7 +1491,10 @@ export class FeishuProgressCardSession {
       this.parentFinalDelivery = "external";
       this.waitingFinalStartedAt = undefined;
       this.externalFinalNotice = true;
-      await this.refreshBackgroundSnapshot();
+      const shouldContinue = await this.refreshBackgroundSnapshot();
+      if (!shouldContinue) {
+        return;
+      }
       if (this.totalTrackedRuns > 0) {
         this.backgroundPhaseSeen = true;
       }
@@ -1334,7 +1529,10 @@ export class FeishuProgressCardSession {
       this.parentFinalDelivery = "silent";
       this.externalFinalNotice = false;
       this.finalText = undefined;
-      await this.refreshBackgroundSnapshot();
+      const shouldContinue = await this.refreshBackgroundSnapshot();
+      if (!shouldContinue) {
+        return;
+      }
       if (this.totalTrackedRuns > 0) {
         this.backgroundPhaseSeen = true;
       }
@@ -1392,7 +1590,10 @@ export class FeishuProgressCardSession {
         return;
       }
       this.parentTurnCompleted = true;
-      await this.refreshBackgroundSnapshot();
+      const shouldContinue = await this.refreshBackgroundSnapshot();
+      if (!shouldContinue) {
+        return;
+      }
       if (this.totalTrackedRuns > 0) {
         this.backgroundPhaseSeen = true;
       }
