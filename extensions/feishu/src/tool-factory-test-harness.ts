@@ -2,6 +2,8 @@ import type { AnyAgentTool, OpenClawPluginApi } from "../runtime-api.js";
 
 type ToolContextLike = {
   agentAccountId?: string;
+  messageChannel?: string;
+  requesterSenderId?: string;
 };
 
 type ToolFactoryLike = (ctx: ToolContextLike) => AnyAgentTool | AnyAgentTool[] | null | undefined;

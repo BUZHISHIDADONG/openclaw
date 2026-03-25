@@ -21,6 +21,15 @@ const FeishuDomainSchema = z.union([
 ]);
 const FeishuConnectionModeSchema = z.enum(["websocket", "webhook"]);
 
+const UATConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    allowedScopes: z.array(z.string()).optional(),
+    blockedScopes: z.array(z.string()).optional(),
+  })
+  .strict()
+  .optional();
+
 const ToolPolicySchema = z
   .object({
     allow: z.array(z.string()).optional(),
@@ -131,6 +140,12 @@ const FeishuToolsConfigSchema = z
     drive: z.boolean().optional(), // Cloud storage operations (default: true)
     perm: z.boolean().optional(), // Permission management (default: false, sensitive)
     scopes: z.boolean().optional(), // App scopes diagnostic (default: true)
+    oauth: z.boolean().optional(), // OAuth/UAT management tools (default: true)
+    calendar: z.boolean().optional(), // Calendar tools (default: true)
+    task: z.boolean().optional(), // Task tools (default: true)
+    sheets: z.boolean().optional(), // Sheets tools (default: true)
+    im: z.boolean().optional(), // IM history/search tools (default: true)
+    search: z.boolean().optional(), // Search doc/wiki tools (default: true)
   })
   .strict()
   .optional();
@@ -206,6 +221,7 @@ const FeishuSharedConfigShape = {
   mediaMaxMb: z.number().positive().optional(),
   httpTimeoutMs: z.number().int().positive().max(300_000).optional(),
   heartbeat: ChannelHeartbeatVisibilitySchema,
+  uat: UATConfigSchema,
   renderMode: RenderModeSchema,
   streaming: StreamingModeSchema,
   progressCard: ProgressCardConfigSchema,

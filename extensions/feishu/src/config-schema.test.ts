@@ -233,6 +233,36 @@ describe("FeishuConfigSchema optimization flags", () => {
     });
     expect(result.accounts?.main?.progressCard?.mode).toBe("tools");
   });
+
+  it("accepts UAT config and official tools in account config", () => {
+    const result = FeishuConfigSchema.parse({
+      accounts: {
+        main: {
+          uat: {
+            allowedScopes: ["search:docs:read"],
+            blockedScopes: ["task:task:write"],
+          },
+          tools: {
+            oauth: false,
+            calendar: false,
+            task: false,
+            sheets: false,
+            im: false,
+            search: false,
+          },
+        },
+      },
+    });
+
+    expect(result.accounts?.main?.uat?.allowedScopes).toEqual(["search:docs:read"]);
+    expect(result.accounts?.main?.uat?.blockedScopes).toEqual(["task:task:write"]);
+    expect(result.accounts?.main?.tools?.oauth).toBe(false);
+    expect(result.accounts?.main?.tools?.calendar).toBe(false);
+    expect(result.accounts?.main?.tools?.task).toBe(false);
+    expect(result.accounts?.main?.tools?.sheets).toBe(false);
+    expect(result.accounts?.main?.tools?.im).toBe(false);
+    expect(result.accounts?.main?.tools?.search).toBe(false);
+  });
 });
 
 describe("FeishuConfigSchema actions", () => {

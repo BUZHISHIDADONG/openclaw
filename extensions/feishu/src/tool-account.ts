@@ -56,6 +56,12 @@ export function resolveAnyEnabledFeishuToolsConfig(
     drive: false,
     perm: false,
     scopes: false,
+    oauth: false,
+    calendar: false,
+    task: false,
+    sheets: false,
+    im: false,
+    search: false,
   };
   for (const account of accounts) {
     const cfg = resolveToolsConfig(account.config.tools);
@@ -65,6 +71,12 @@ export function resolveAnyEnabledFeishuToolsConfig(
     merged.drive = merged.drive || cfg.drive;
     merged.perm = merged.perm || cfg.perm;
     merged.scopes = merged.scopes || cfg.scopes;
+    merged.oauth = merged.oauth || cfg.oauth;
+    merged.calendar = merged.calendar || cfg.calendar;
+    merged.task = merged.task || cfg.task;
+    merged.sheets = merged.sheets || cfg.sheets;
+    merged.im = merged.im || cfg.im;
+    merged.search = merged.search || cfg.search;
   }
   return merged;
 }

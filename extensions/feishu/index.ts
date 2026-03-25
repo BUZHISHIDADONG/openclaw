@@ -1,12 +1,18 @@
 import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import { registerFeishuBitableTools } from "./src/bitable.js";
+import { registerFeishuOfficialCalendarTools } from "./src/calendar-tools.js";
 import { feishuPlugin } from "./src/channel.js";
 import { registerFeishuChatTools } from "./src/chat.js";
 import { registerFeishuDocTools } from "./src/docx.js";
 import { registerFeishuDriveTools } from "./src/drive.js";
+import { registerFeishuOfficialImTools } from "./src/im-tools.js";
+import { registerFeishuOauthTools } from "./src/oauth-tools.js";
 import { registerFeishuPermTools } from "./src/perm.js";
 import { setFeishuRuntime } from "./src/runtime.js";
+import { registerFeishuSearchDocWikiTool } from "./src/search-doc-wiki.js";
+import { registerFeishuOfficialSheetTools } from "./src/sheet-tools.js";
 import { registerFeishuSubagentHooks } from "./src/subagent-hooks.js";
+import { registerFeishuOfficialTaskTools } from "./src/task-tools.js";
 import { registerFeishuWikiTools } from "./src/wiki.js";
 
 export { feishuPlugin } from "./src/channel.js";
@@ -60,5 +66,11 @@ export default defineChannelPluginEntry({
     registerFeishuDriveTools(api);
     registerFeishuPermTools(api);
     registerFeishuBitableTools(api);
+    registerFeishuOauthTools(api);
+    registerFeishuSearchDocWikiTool(api);
+    registerFeishuOfficialImTools(api);
+    registerFeishuOfficialCalendarTools(api);
+    registerFeishuOfficialTaskTools(api);
+    registerFeishuOfficialSheetTools(api);
   },
 });

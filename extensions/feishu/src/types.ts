@@ -95,6 +95,18 @@ export type FeishuToolsConfig = {
   drive?: boolean;
   perm?: boolean;
   scopes?: boolean;
+  oauth?: boolean;
+  calendar?: boolean;
+  task?: boolean;
+  sheets?: boolean;
+  im?: boolean;
+  search?: boolean;
+};
+
+export type FeishuUatConfig = {
+  enabled?: boolean;
+  allowedScopes?: string[];
+  blockedScopes?: string[];
 };
 
 export type DynamicAgentCreationConfig = {
