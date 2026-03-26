@@ -17,6 +17,7 @@ import {
   FEISHU_APPROVAL_CONFIRM_ACTION,
   FEISHU_APPROVAL_REQUEST_ACTION,
 } from "./card-ux-approval.js";
+import { abortFeishuProgressCardByMessageId } from "./progress-card.js";
 import { sendCardFeishu, sendMessageFeishu } from "./send.js";
 
 export type FeishuCardActionEvent = {
@@ -149,6 +150,7 @@ async function dispatchSyntheticCommand(params: {
   chatId?: string;
   chatType?: "p2p" | "group";
   targetSessionKey?: string;
+  targetCardMessageId?: string;
   skipReplyTo?: boolean;
 }): Promise<void> {
   await handleFeishuMessage({
@@ -164,6 +166,15 @@ async function dispatchSyntheticCommand(params: {
     }),
     botOpenId: params.botOpenId,
     runtime: params.runtime,
+    accountId: params.accountId,
+  });
+  const normalizedCommand = params.command.trim();
+  const normalizedCardMessageId = params.targetCardMessageId?.trim();
+  if (normalizedCommand !== "/stop" || !normalizedCardMessageId) {
+    return;
+  }
+  await abortFeishuProgressCardByMessageId({
+    messageId: normalizedCardMessageId,
     accountId: params.accountId,
   });
 }
@@ -341,6 +352,7 @@ export async function handleFeishuCardAction(params: {
             targetSessionKey?: string;
             targetChatId?: string;
             targetChatType?: "p2p" | "group";
+            targetCardMessageId?: string;
           })
         : undefined;
     await dispatchSyntheticCommand({
@@ -356,6 +368,7 @@ export async function handleFeishuCardAction(params: {
           ? fallbackValue.targetChatType
           : undefined,
       targetSessionKey: fallbackValue?.targetSessionKey?.trim() || undefined,
+      targetCardMessageId: fallbackValue?.targetCardMessageId?.trim() || undefined,
       skipReplyTo: true,
     });
     completeFeishuCardActionToken({ token: event.token, accountId: account.accountId });

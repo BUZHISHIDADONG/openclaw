@@ -156,6 +156,30 @@ export async function abortActiveFeishuProgressCards(params?: {
   await Promise.allSettled(sessions.map((session) => session.abort({ reason })));
 }
 
+export async function abortFeishuProgressCardByMessageId(params: {
+  messageId: string;
+  accountId?: string;
+  reason?: string;
+}): Promise<boolean> {
+  const normalizedMessageId = params.messageId.trim();
+  if (!normalizedMessageId) {
+    return false;
+  }
+  const session = [...activeProgressCardSessions].find(
+    (candidate) =>
+      candidate.matchesMessageId(normalizedMessageId) &&
+      candidate.matchesAccountId(params.accountId),
+  );
+  if (!session) {
+    return false;
+  }
+  const reason =
+    truncateText(sanitizeInlineText(params.reason), PREVIEW_LIMIT) ??
+    "已收到停止指令，本轮任务已中断。";
+  await session.abort({ reason });
+  return true;
+}
+
 async function loadPersistedCardStates(): Promise<PersistedCardState[]> {
   try {
     const content = await fs.readFile(PERSISTENCE_FILE_PATH, "utf-8");
@@ -880,6 +904,14 @@ export class FeishuProgressCardSession {
       return true;
     }
     return (this.accountId?.trim() || "") === normalized;
+  }
+
+  matchesMessageId(messageId: string | undefined): boolean {
+    const normalized = messageId?.trim();
+    if (!normalized) {
+      return false;
+    }
+    return (this.messageId?.trim() || "") === normalized;
   }
 
   private async persistState(): Promise<void> {

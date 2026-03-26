@@ -21,10 +21,7 @@ vi.mock("./bot.js", () => ({
   handleFeishuMessage: vi.fn(),
 }));
 vi.mock("./progress-card.js", () => ({
-  markFeishuProgressCardStopRequested: vi.fn(),
-}));
-vi.mock("./send.js", () => ({
-  updateCardFeishu: vi.fn(),
+  abortFeishuProgressCardByMessageId: vi.fn(),
 }));
 
 const sendCardFeishuMock = vi.hoisted(() => vi.fn());
@@ -33,12 +30,10 @@ const sendMessageFeishuMock = vi.hoisted(() => vi.fn());
 vi.mock("./send.js", () => ({
   sendCardFeishu: sendCardFeishuMock,
   sendMessageFeishu: sendMessageFeishuMock,
-  updateCardFeishu: vi.fn(),
 }));
 
 import { handleFeishuMessage } from "./bot.js";
-import { markFeishuProgressCardStopRequested } from "./progress-card.js";
-import { updateCardFeishu } from "./send.js";
+import { abortFeishuProgressCardByMessageId } from "./progress-card.js";
 
 describe("Feishu Card Action Handler", () => {
   const cfg = {} as any; // Minimal mock
@@ -160,7 +155,7 @@ describe("Feishu Card Action Handler", () => {
     );
   });
 
-  it("does not freeze the origin progress card before /stop is actually processed", async () => {
+  it("aborts the origin progress card after /stop is actually processed", async () => {
     const event: FeishuCardActionEvent = {
       operator: { open_id: "u123", user_id: "uid1", union_id: "un1" },
       token: "tok-group-stop-card",
@@ -179,8 +174,14 @@ describe("Feishu Card Action Handler", () => {
 
     await handleFeishuCardAction({ cfg, event, runtime });
 
-    expect(markFeishuProgressCardStopRequested).not.toHaveBeenCalled();
-    expect(updateCardFeishu).not.toHaveBeenCalled();
+    expect(handleFeishuMessage).toHaveBeenCalledTimes(1);
+    expect(abortFeishuProgressCardByMessageId).toHaveBeenCalledWith({
+      messageId: "om_progress_card",
+      accountId: undefined,
+    });
+    expect(vi.mocked(handleFeishuMessage).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(abortFeishuProgressCardByMessageId).mock.invocationCallOrder[0],
+    );
   });
 
   it("handles card action with JSON object payload", async () => {

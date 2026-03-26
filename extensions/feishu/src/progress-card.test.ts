@@ -30,6 +30,7 @@ vi.mock("./streaming-card.js", () => ({
 
 import {
   abortActiveFeishuProgressCards,
+  abortFeishuProgressCardByMessageId,
   FeishuProgressCardSession,
   resetFeishuProgressCardStateForTests,
   resolveFeishuProgressCardMode,
@@ -392,6 +393,33 @@ describe("FeishuProgressCardSession", () => {
     expect(patchedCard.header?.title?.content).toBe("🦞 OpenClaw 已中断");
     expect(patchedCard.body?.elements?.[0]?.content).toContain("任务已中断");
     expect(patchedCard.body?.elements?.[0]?.content).toContain("网关正在重启");
+    expect(findStopButton(patchedCard)).toBeUndefined();
+  });
+
+  it("marks the matching card as aborted after a stop button request is processed", async () => {
+    const session = new FeishuProgressCardSession({
+      cfg: {} as never,
+      chatId: "oc_chat",
+      accountId: "main",
+      mode: "tools_summary",
+    });
+
+    await session.noteToolStart({ name: "read", phase: "start" });
+
+    const aborted = await abortFeishuProgressCardByMessageId({
+      messageId: "om_progress",
+      accountId: "main",
+    });
+
+    expect(aborted).toBe(true);
+    const patchedCard = updateCardFeishuMock.mock.calls[
+      updateCardFeishuMock.mock.calls.length - 1
+    ]?.[0]?.card as {
+      header?: { title?: { content?: string } };
+      body?: { elements?: Array<{ content?: string }> };
+    };
+    expect(patchedCard.header?.title?.content).toBe("🦞 OpenClaw 已中断");
+    expect(patchedCard.body?.elements?.[0]?.content).toContain("已收到停止指令");
     expect(findStopButton(patchedCard)).toBeUndefined();
   });
 
